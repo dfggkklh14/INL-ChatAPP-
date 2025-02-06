@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import os
 import sqlite3
 import socket
 import threading
@@ -10,17 +9,25 @@ import logging
 # 配置日志记录
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
 
+# 配置
+SERVER_CONFIG = {
+    'HOST': '192.168.110.103',
+    'PORT': 10000,
+    'DB_PATH': r'D:\AppTests\fy\chat_server.db',
+    'LOGGING': {
+        'LEVEL': logging.DEBUG,
+        'FORMAT': '%(asctime)s %(levelname)s: %(message)s'
+    }
+}
+
 # 全局变量
 clients = {}  # 存储已登录用户与对应的socket
 clients_lock = threading.Lock()
-SERVER_HOST = '192.168.110.103'
-SERVER_PORT = 10000
-DB_PATH = r'D:\AppTests\fy\chat_server.db'
 
 def get_db_connection() -> sqlite3.Connection:
     """建立并返回数据库连接（开启WAL模式）"""
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
+        conn = sqlite3.connect(SERVER_CONFIG['DB_PATH'], timeout=10, check_same_thread=False)
         conn.execute('PRAGMA journal_mode=WAL')
         return conn
     except sqlite3.Error as e:
@@ -104,8 +111,8 @@ def authenticate(request: dict, client_sock: socket.socket) -> dict:
         logging.info(f"用户 {username} 认证成功")
         return {"type": "authenticate", "status": "success", "message": "认证成功", "request_id": request_id}
     else:
-        logging.info(f"用户 {username} 认证失败")
-        return {"type": "authenticate", "status": "fail", "message": "认证失败", "request_id": request_id}
+        logging.info(f"用户 {username} 账号或密码错误")
+        return {"type": "authenticate", "status": "fail", "message": "账号或密码错误", "request_id": request_id}
 
 def send_message(request: dict, client_sock: socket.socket) -> dict:
     from_user = request.get("from")
@@ -261,7 +268,6 @@ def handle_client(client_sock: socket.socket, client_addr):
                 continue
 
             req_type = request.get("type")
-            response = None
             if req_type == "authenticate":
                 response = authenticate(request, client_sock)
             elif req_type == "send_message":
@@ -301,9 +307,9 @@ def handle_client(client_sock: socket.socket, client_addr):
 def start_server():
     init_db()
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_sock.bind((SERVER_HOST, SERVER_PORT))
+    server_sock.bind((SERVER_CONFIG['HOST'], SERVER_CONFIG['PORT']))
     server_sock.listen(5)
-    logging.info(f"服务器启动，监听 {SERVER_HOST}:{SERVER_PORT}")
+    logging.info(f"服务器启动，监听 {SERVER_CONFIG['HOST']}:{SERVER_CONFIG['PORT']}")
     try:
         while True:
             client_sock, client_addr = server_sock.accept()
