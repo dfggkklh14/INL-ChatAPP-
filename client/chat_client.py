@@ -3,34 +3,38 @@ import socket, json, time, uuid, asyncio
 from datetime import datetime, timedelta
 
 class ChatClient:
-    def __init__(self, host='192.168.110.103', port=10000, max_retries=5, delay=2):
+    def __init__(self, host='192.168.110.103', port=10000):
+        self.config = {
+            'host': host,
+            'port': port,
+            'retries': 5,
+            'delay': 2
+        }
+        self._init_connection()
+
+    def _init_connection(self):
+        """初始化连接相关属性"""
         self.is_authenticated = False
-        self.username = self.password = self.current_friend = None
-        self.host, self.port = host, port
-        self.max_retries, self.delay = max_retries, delay
+        self.username = self.current_friend = None
         self.client_socket = None
         self.send_lock = asyncio.Lock()
-        self.pending_requests = {}  # 存储等待响应的 Future
+        self.pending_requests = {}
         self.on_new_message_callback = None
-        self.connect_server()
+        self._connect()
 
-    def connect_server(self):
-        for _ in range(self.max_retries):
+    def _connect(self):
+        for _ in range(self.config['retries']):
             try:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.client_socket.connect((self.host, self.port))
-                print(f"成功连接到服务器 {self.host}:{self.port}")
+                self.client_socket.connect((self.config['host'], self.config['port']))
+                print(f"成功连接到服务器 {self.config['host']}:{self.config['port']}")
                 return
             except socket.error as e:
                 print(f"连接失败: {e}")
-                time.sleep(self.delay)
+                time.sleep(self.config['delay'])
         print("超过最大重试次数，连接失败。")
 
     def _sync_send_recv(self, req: dict) -> dict:
-        """
-        此方法仅供部分同步请求使用，但不应在其他异步请求中混用，
-        避免与 start_reader() 同时读写同一 socket 导致数据错乱。
-        """
         try:
             data = json.dumps(req, ensure_ascii=False).encode('utf-8')
             self.client_socket.send(len(data).to_bytes(4, 'big') + data)
@@ -43,28 +47,15 @@ class ChatClient:
             print(f"发送/接收异常: {e}")
             return {"status": "error", "message": str(e)}
 
-    def authenticate_sync(self, username, password):
-        req = {"type": "authenticate", "username": username, "password": password, "request_id": str(uuid.uuid4())}
-        return self._sync_send_recv(req)
-
     async def authenticate(self, username, password) -> str:
-        resp = await asyncio.to_thread(self.authenticate_sync, username, password)
+        req = {"type": "authenticate", "username": username, "password": password, "request_id": str(uuid.uuid4())}
+        resp = await asyncio.to_thread(self._sync_send_recv, req)
         if resp.get("status") == "success":
-            self.username, self.password, self.is_authenticated = username, password, True
-            print("认证成功")
+            self.username, self.is_authenticated = username, True
             return "认证成功"
-        elif resp.get("message") == "该账号已登录":
-            print("该账号已登录")
-            return "该账号已登录"
-        else:
-            print("认证失败:", resp)
-            return "认证失败"
+        return resp.get("message", "账号或密码错误")
 
     async def start_reader(self):
-        """
-        后台读取任务：不断从 socket 中读取响应或推送消息，
-        读取到的数据会交由相应 Future 或回调处理。
-        """
         while True:
             try:
                 h = await self._recv_async(4)
@@ -77,7 +68,6 @@ class ChatClient:
                 except Exception as decode_err:
                     print(f"后台读取任务异常: {decode_err}")
                     continue
-
                 req_id = resp.get("request_id")
                 if req_id in self.pending_requests:
                     self.pending_requests.pop(req_id).set_result(resp)
@@ -90,14 +80,9 @@ class ChatClient:
                 await asyncio.sleep(1)
 
     async def get_chat_history(self, friend: str) -> dict:
-        if not self.is_authenticated:
-            return {"type": "chat_history", "data": []}
         req = {"type": "get_chat_history", "username": self.username, "friend": friend, "request_id": str(uuid.uuid4())}
         resp = await self.send_request(req)
-        if resp and resp.get("request_id") == req["request_id"]:
-            return await self.parse_response(resp, friend)
-        else:
-            return {"type": "chat_history", "data": []}
+        return await self.parse_response(resp, friend)
 
     async def send_message(self, from_user: str, to_user: str, message: str) -> dict:
         req = {"type": "send_message", "from": from_user, "to": to_user, "message": message, "request_id": str(uuid.uuid4())}
@@ -137,7 +122,8 @@ class ChatClient:
 
     async def parse_response(self, resp: dict, friend: str) -> dict:
         history = resp.get("chat_history", [])
-        parsed, errors = [], []
+        parsed = []
+        errors = []
         for entry in history:
             try:
                 wt, sender, msg = entry.get("write_time"), entry.get("username"), entry.get("message")
@@ -146,9 +132,6 @@ class ChatClient:
                 ts = datetime.strptime(wt, "%Y-%m-%d %H:%M:%S")
                 formatted = ts.strftime("%H:%M") if (datetime.now() - ts) < timedelta(days=1) else ts.strftime("%m.%d %H:%M")
                 is_current = (sender == self.username)
-                expected = f"{self.username}+{friend}+is_Vei" if is_current else f"{friend}+{self.username}+is_Vei"
-                if entry.get("verify", "") != expected:
-                    raise Exception("验证失败")
                 parsed.append({"write_time": formatted, "sender_username": sender, "message": msg, "is_current_user": is_current})
             except Exception as ex:
                 errors.append({"entry": entry, "error": str(ex)})
