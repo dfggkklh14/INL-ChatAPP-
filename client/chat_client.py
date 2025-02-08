@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
+# chtt_lient.py
 import socket, json, time, uuid, asyncio
 from datetime import datetime, timedelta
+from cryptography.fernet import Fernet
+
+# 加密密钥（必须与服务器端一致,密钥后期可以改为使用安全配置文件或者在系统环境变量中获取）
+ENCRYPTION_KEY = b'JZ-fJzE7kZDhSyvxCL6odNCB7cP3SdBAnjHR3d2LhcI='
+fernet = Fernet(ENCRYPTION_KEY)
 
 class ChatClient:
-    def __init__(self, host='192.168.110.103', port=10000):
+    def __init__(self, host='your host', port='your port'):
         self.config = {
             'host': host,
             'port': port,
@@ -34,15 +40,28 @@ class ChatClient:
                 time.sleep(self.config['delay'])
         print("超过最大重试次数，连接失败。")
 
+    def _sync_recv_all(self, length: int) -> bytes:
+        """同步接收指定长度的数据"""
+        data = b""
+        while len(data) < length:
+            chunk = self.client_socket.recv(length - len(data))
+            if not chunk:
+                raise Exception("接收数据异常")
+            data += chunk
+        return data
+
     def _sync_send_recv(self, req: dict) -> dict:
         try:
-            data = json.dumps(req, ensure_ascii=False).encode('utf-8')
-            self.client_socket.send(len(data).to_bytes(4, 'big') + data)
-            header = self.client_socket.recv(4)
+            plaintext = json.dumps(req, ensure_ascii=False).encode('utf-8')
+            ciphertext = fernet.encrypt(plaintext)
+            self.client_socket.send(len(ciphertext).to_bytes(4, 'big') + ciphertext)
+            header = self._sync_recv_all(4)
             if len(header) < 4:
                 raise Exception("响应头不完整")
             length = int.from_bytes(header, 'big')
-            return json.loads(self.client_socket.recv(length).decode('utf-8'))
+            encrypted_response = self._sync_recv_all(length)
+            decrypted_response = fernet.decrypt(encrypted_response)
+            return json.loads(decrypted_response.decode('utf-8'))
         except Exception as e:
             print(f"发送/接收异常: {e}")
             return {"status": "error", "message": str(e)}
@@ -62,9 +81,10 @@ class ChatClient:
                 if len(h) < 4:
                     continue
                 l = int.from_bytes(h, 'big')
-                payload = await self._recv_async(l)
+                encrypted_payload = await self._recv_async(l)
                 try:
-                    resp = json.loads(payload.decode('utf-8'))
+                    decrypted_payload = fernet.decrypt(encrypted_payload)
+                    resp = json.loads(decrypted_payload.decode('utf-8'))
                 except Exception as decode_err:
                     print(f"后台读取任务异常: {decode_err}")
                     continue
@@ -102,8 +122,9 @@ class ChatClient:
     async def send_request(self, req: dict) -> dict:
         try:
             async with self.send_lock:
-                data = json.dumps(req, ensure_ascii=False).encode('utf-8')
-                self.client_socket.send(len(data).to_bytes(4, 'big') + data)
+                plaintext = json.dumps(req, ensure_ascii=False).encode('utf-8')
+                ciphertext = fernet.encrypt(plaintext)
+                self.client_socket.send(len(ciphertext).to_bytes(4, 'big') + ciphertext)
             fut = asyncio.get_running_loop().create_future()
             self.pending_requests[req.get("request_id")] = fut
             return await fut
