@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
+# server.py
 import sqlite3
 import socket
 import threading
 import json
 from datetime import datetime
 import logging
+from cryptography.fernet import Fernet
 
 # 配置日志记录
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
 
 # 配置
 SERVER_CONFIG = {
-    'HOST': '192.168.110.103',
-    'PORT': 10000,
+    'HOST': 'your host',
+    'PORT': 'your port',
     'DB_PATH': r'D:\AppTests\fy\chat_server.db',
     'LOGGING': {
         'LEVEL': logging.DEBUG,
         'FORMAT': '%(asctime)s %(levelname)s: %(message)s'
     }
 }
+
+# 加密密钥（双方必须共享相同密钥）
+ENCRYPTION_KEY = b'JZ-fJzE7kZDhSyvxCL6odNCB7cP3SdBAnjHR3d2LhcI='
+fernet = Fernet(ENCRYPTION_KEY)
 
 # 全局变量
 clients = {}  # 存储已登录用户与对应的socket
@@ -83,11 +89,12 @@ def recv_all(sock: socket.socket, length: int) -> bytes:
     return data
 
 def send_response(client_sock: socket.socket, response: dict):
-    """发送响应数据到客户端"""
+    """发送响应数据到客户端，并使用Fernet加密"""
     try:
-        response_bytes = json.dumps(response, ensure_ascii=False).encode('utf-8')
-        length_header = len(response_bytes).to_bytes(4, byteorder='big')
-        client_sock.sendall(length_header + response_bytes)
+        plaintext = json.dumps(response, ensure_ascii=False).encode('utf-8')
+        ciphertext = fernet.encrypt(plaintext)
+        length_header = len(ciphertext).to_bytes(4, byteorder='big')
+        client_sock.sendall(length_header + ciphertext)
     except Exception as e:
         logging.error(f"发送响应失败: {e}")
 
@@ -256,14 +263,16 @@ def handle_client(client_sock: socket.socket, client_addr):
             if not header:
                 break
             msg_length = int.from_bytes(header, 'big')
-            data = recv_all(client_sock, msg_length)
-            if not data:
+            encrypted_data = recv_all(client_sock, msg_length)
+            if not encrypted_data:
                 break
             try:
-                request = json.loads(data.decode('utf-8'))
+                # 解密并解析请求数据
+                decrypted_data = fernet.decrypt(encrypted_data)
+                request = json.loads(decrypted_data.decode('utf-8'))
                 logging.debug(f"收到请求: {request}")
-            except json.JSONDecodeError as e:
-                logging.error(f"JSON解析错误: {e}")
+            except Exception as e:
+                logging.error(f"数据解密或JSON解析错误: {e}")
                 send_response(client_sock, {"status": "error", "message": "请求格式无效"})
                 continue
 
