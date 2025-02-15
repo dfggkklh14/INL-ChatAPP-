@@ -77,7 +77,7 @@ def style_rounded_button(button):
     """设置圆角按钮样式"""
     _apply_button_style(button, "border-radius: 4px;")
 
-def style_line_edit(line_edit, border_radius: str = ""):
+def style_line_edit(line_edit):
     """设置文本输入框样式，边框和圆角"""
     line_edit.setStyleSheet("""
         QLineEdit {
@@ -91,6 +91,7 @@ def style_line_edit(line_edit, border_radius: str = ""):
 
 def style_text_edit(text_edit):
     """设置多行文本编辑框样式，并应用滚动条美化"""
+    # 设置 QTextEdit 本身的样式
     text_edit.setStyleSheet(f"""
         QTextEdit {{
             border: 1px solid #dcdcdc;
@@ -99,10 +100,10 @@ def style_text_edit(text_edit):
         QTextEdit:focus {{
             border: 1px solid #2e8b57;
         }}
-        QTextEdit QScrollBar:vertical {{
-            {SCROLLBAR_STYLE.replace("QScrollBar", "QTextEdit QScrollBar")}
-        }}
     """)
+    scroll_bar = text_edit.verticalScrollBar()
+    if scroll_bar:
+        scroll_bar.setStyleSheet(SCROLLBAR_STYLE)
 
 def style_list_widget(list_widget):
     """设置列表控件样式，并应用滚动条美化"""
@@ -137,18 +138,28 @@ class MessageInput(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent = parent
+        style_text_edit(self)
 
     def keyPressEvent(self, event):
-        """按键事件：回车键发送消息，Alt+回车换行"""
+        """按键事件：回车键发送消息，Shift+回车换行"""
         if event.key() == Qt.Key_Return:
             if event.modifiers() & Qt.ShiftModifier:
                 self.insertPlainText('\n')
+                self.move_cursor_to_bottom()
             else:
                 if self.parent:
                     asyncio.create_task(self.parent.send_message())
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def move_cursor_to_bottom(self):
+        """滚动文本框到最后"""
+        cursor = self.textCursor()
+        cursor.movePosition(cursor.End)
+        self.setTextCursor(cursor)
+        # 滚动到最底部
+        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
 
 # 自定义好友列表项显示控件
 class FriendItemWidget(QWidget):
@@ -275,7 +286,6 @@ class OnLine(QWidget):
 class ChatAreaWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("border: none; background-color: #ffffff;")
         self._init_ui()
         self.bubble_containers = []  # 保存包装后的气泡容器
 
