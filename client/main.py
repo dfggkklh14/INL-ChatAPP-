@@ -243,7 +243,6 @@ class ChatWindow(QWidget):
         area_layout.addWidget(self.chat_components['scroll'])
         # 消息输入与发送
         self.chat_components['input'] = MessageInput(self)
-        style_text_edit(self.chat_components['input'])
         self.chat_components['input'].setPlaceholderText("输入消息")
         self.chat_components['input'].setFixedHeight(70)
         self.chat_components['send_button'] = QPushButton("发送", self)
