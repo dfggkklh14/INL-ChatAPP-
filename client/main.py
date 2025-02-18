@@ -56,7 +56,7 @@ def create_themed_message_box(parent: QWidget, title: str, text: str) -> QMessag
     current_theme = theme_manager.current_theme
     text_color = current_theme.get('TEXT_COLOR', '#ffffff')
     msg_box.setStyleSheet(f"QLabel {{ color: {text_color}; }}")
-    ok_button = msg_box.addButton(QMessageBox.Ok)
+    ok_button = msg_box.addButton("确认", QMessageBox.AcceptRole)
     style_rounded_button(ok_button)
     for label in msg_box.findChildren(QLabel):
         style_label(label)
