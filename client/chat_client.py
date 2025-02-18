@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # chat_client.py
+import os
 import socket
 import json
 import time
@@ -7,7 +8,21 @@ import uuid
 import asyncio
 from cryptography.fernet import Fernet
 
-ENCRYPTION_KEY = b'JZ-fJzE7kZDhSyvxCL6odNCB7cP3SdBAnjHR3d2LhcI='
+def load_encryption_key():
+    key = os.getenv("ENCRYPTION_KEY")
+    if key:
+        print("从环境变量中加载到密钥:", key)  # 调试用，运行时可去掉
+        return key.encode('utf-8')
+    key_file = os.path.join(os.path.dirname(__file__), "secret.key")
+    print("环境变量中没有找到密钥，尝试从文件加载:", key_file)
+    try:
+        with open(key_file, "rb") as f:
+            return f.read()
+    except Exception as e:
+        raise ValueError("未能加载加密密钥。请设置 ENCRYPTION_KEY 环境变量或创建 secret.key 文件。") from e
+
+
+ENCRYPTION_KEY = load_encryption_key()
 fernet = Fernet(ENCRYPTION_KEY)
 
 class ChatClient:
@@ -174,7 +189,7 @@ class ChatClient:
             "request_id": str(uuid.uuid4())
         }
         resp = await self.send_request(req)
-        return resp.get("message", "添加好友失败")
+        return resp.get("message", "")
 
     async def parse_response(self, resp: dict) -> dict:
         history = resp.get("chat_history", [])
