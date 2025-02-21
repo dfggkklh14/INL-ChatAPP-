@@ -1,6 +1,6 @@
 # Interface_Controls.py
 from PyQt5 import sip
-from PyQt5.QtCore import Qt, QSize, QRect, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, QRect, pyqtSignal, QTimer
 from PyQt5.QtGui import QPainter, QColor, QFont, QFontMetrics, QPixmap, QPainterPath
 from PyQt5.QtWidgets import QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QSizePolicy
 from dataclasses import dataclass
@@ -244,6 +244,7 @@ class FriendItemWidget(QWidget):
         super().__init__(parent)
         self.username, self.online, self.unread = username, online, unread
         self._init_ui(); self.update_display()
+
     def _init_ui(self) -> None:
         self.setLayout(QHBoxLayout())
         self.layout().setContentsMargins(5,5,5,5)
@@ -255,10 +256,12 @@ class FriendItemWidget(QWidget):
         self.layout().addWidget(self.name_label)
         self.layout().addStretch()
         self.layout().addWidget(self.badge_label)
+
     def update_display(self) -> None:
         self.status_label.setPixmap(create_status_indicator(self.online) if self.online else QPixmap())
         self.name_label.setText(self.username)
         self.badge_label.setPixmap(create_badge(self.unread) if self.unread > 0 else QPixmap())
+
     def update_theme(self, theme: dict) -> None:
         if not sip.isdeleted(self.name_label): style_label(self.name_label)
         if not sip.isdeleted(self.badge_label): self.badge_label.setStyleSheet("background-color: transparent;")
@@ -286,6 +289,7 @@ class OnLine(QWidget):
         super().__init__(parent)
         self.username = ""; self.online = False; self.setAttribute(Qt.WA_StyledBackground, True)
         self._init_ui()
+
     def _init_ui(self) -> None:
         self.main_font, self.username_font = QFont("微软雅黑", 10), QFont("微软雅黑", 12)
         self.setLayout(QVBoxLayout()); self.layout().setContentsMargins(5,5,5,5); self.layout().setSpacing(2)
@@ -298,11 +302,13 @@ class OnLine(QWidget):
         self.status_text_label.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
         hl.addWidget(self.status_icon_label); hl.addWidget(self.status_text_label); hl.addStretch()
         self.layout().addLayout(hl)
+
     def update_status(self, username: str, online: bool) -> None:
         self.username, self.online = username, online
         self.username_label.setText(username)
         self.status_icon_label.setPixmap(create_status_indicator(online))
         self.status_text_label.setText("在线" if online else "离线")
+
     def update_theme(self, theme: dict) -> None:
         style_label(self.username_label); style_label(self.status_text_label)
         self.setStyleSheet(f"background-color: {theme['widget_bg']};")
@@ -315,21 +321,33 @@ class ChatAreaWidget(QWidget):
         self.layout().setContentsMargins(5,5,5,5); self.layout().setSpacing(5)
         self.bubble_containers: List[QWidget] = []
         self.newBubblesAdded.connect(self.update)
+
     def addBubble(self, bubble):
         wrap = QWidget(); hl = QHBoxLayout(wrap)
         hl.setContentsMargins(0,0,0,0)
         if getattr(bubble, "align", "left")=="right": hl.addStretch(), hl.addWidget(bubble)
         else: hl.addWidget(bubble), hl.addStretch()
         self.layout().addWidget(wrap); self.layout().update(); self.updateGeometry()
+
     def addBubbles(self, bubbles: List[QWidget]) -> None:
+        ChatBubbleWidget.config.chat_area_width = self.width()  # 在添加前更新宽度
         for bubble in bubbles:
-            cont = QWidget(self); hl = QHBoxLayout(cont)
-            hl.setContentsMargins(0,0,0,0); hl.setSpacing(0)
-            if hasattr(bubble, "align") and bubble.align=="right": hl.addStretch(), hl.addWidget(bubble)
-            else: hl.addWidget(bubble), hl.addStretch()
+            cont = QWidget(self)
+            hl = QHBoxLayout(cont)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.setSpacing(0)
+            if hasattr(bubble, "align") and bubble.align == "right":
+                hl.addStretch()
+                hl.addWidget(bubble)
+            else:
+                hl.addWidget(bubble)
+                hl.addStretch()
             self.bubble_containers.insert(0, cont)
             self.layout().insertWidget(0, cont)
+        # 延迟更新尺寸，确保布局生效
+        QTimer.singleShot(0, lambda: [b.updateBubbleSize() for b in bubbles])
         self.newBubblesAdded.emit()
+
     def resizeEvent(self, e: Any) -> None:
         ChatBubbleWidget.config.chat_area_width = self.width()
         for cont in self.bubble_containers:
@@ -359,6 +377,7 @@ class ChatBubbleWidget(QWidget):
         self.bubble_color = LIGHT_THEME["BUBBLE_USER"] if self.is_current_user else LIGHT_THEME["BUBBLE_OTHER"]
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self._init_ui()
+
     def _init_ui(self) -> None:
         self.text_message = QTextEdit(self)
         self.text_message.setFont(FONTS['MESSAGE'])
@@ -373,8 +392,10 @@ class ChatBubbleWidget(QWidget):
         self.label_time.setTextInteractionFlags(Qt.NoTextInteraction)
         self.label_time.setText(self.time_str)
         self._bubble_rect = QRect()
+
     def _insertZeroWidthSpace(self, text: str) -> str:
         return '\n'.join(( "\u200B".join(line) if ' ' not in line else line ) for line in text.split('\n'))
+
     def _calculateSizes(self) -> tuple[QSize, QSize, QSize, int]:
         available = int(self.config.chat_area_width * 0.6)
         fm_msg = QFontMetrics(FONTS['MESSAGE'])
@@ -395,9 +416,11 @@ class ChatBubbleWidget(QWidget):
         bubble_w = content_width + 2*self.config.h_padding
         bubble_h = text_size.height() + fm_time.height() + 2*self.config.v_padding + self.config.gap
         return QSize(bubble_w, bubble_h), text_size, time_size, chosen
+
     def sizeHint(self) -> QSize:
         s, _, _, _ = self._calculateSizes()
         return QSize(s.width()+self.config.triangle_size, s.height())
+
     def updateBubbleSize(self) -> None:
         bubble, text, tsize, chosen = self._calculateSizes()
         bx = 0 if self.align=="right" else self.config.triangle_size
@@ -408,8 +431,10 @@ class ChatBubbleWidget(QWidget):
         ns = QSize(bubble.width()+self.config.triangle_size, bubble.height())
         if self.size()!=ns: self.setFixedSize(ns)
         self.update()
+
     def resizeEvent(self, e: Any) -> None:
         self.updateBubbleSize(); super().resizeEvent(e)
+
     def paintEvent(self, e: Any) -> None:
         p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
         p.setBrush(self.bubble_color); p.setPen(Qt.NoPen)
