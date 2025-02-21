@@ -16,7 +16,7 @@ from chat_client import ChatClient
 from Interface_Controls import (
     MessageInput, FriendItemWidget, ChatAreaWidget, ChatBubbleWidget,
     style_button, style_line_edit, style_list_widget, style_scrollbar,
-    OnLine, style_rounded_button, style_text_edit, theme_manager, style_label, circle_button_style)
+    OnLine, style_rounded_button, style_text_edit, theme_manager, style_label, circle_button_style, get_scrollbar_style)
 
 # ------------------ 新增 ------------------
 # 定义 FlashWindowEx 使用的结构体，用于任务栏图标闪烁（仅 Windows 有效）
@@ -239,6 +239,7 @@ class ChatWindow(QWidget):
         self.friend_list.setSelectionMode(QListWidget.SingleSelection)
         self.friend_list.setFocusPolicy(Qt.StrongFocus)
         style_list_widget(self.friend_list)
+        self.friend_list.verticalScrollBar().setStyleSheet(get_scrollbar_style())
         self.friend_list.itemClicked.connect(lambda item: asyncio.create_task(self.select_friend(item)))
         layout.addWidget(self.friend_list)
         return panel
@@ -266,6 +267,8 @@ class ChatWindow(QWidget):
         self.update_theme(theme_manager.current_theme)
 
     def update_theme(self, theme: dict) -> None:
+        style_list_widget(self.friend_list)
+        self.friend_list.verticalScrollBar().setStyleSheet(get_scrollbar_style())
         self.setStyleSheet(f"background-color: {theme['MAIN_INTERFACE']};")
         if self.chat_components['scroll']:
             self.chat_components['scroll'].viewport().setStyleSheet(f"background-color: {theme['chat_bg']};")
@@ -495,7 +498,7 @@ class ChatWindow(QWidget):
         if res and res.get("type") == "chat_history":
             messages = res.get("data", [])
             if messages:
-                bubbles, inserted = [], 0
+                bubbles = []
                 for msg in messages:
                     bubble = ChatBubbleWidget(
                         msg.get("message", ""),
@@ -504,14 +507,14 @@ class ChatWindow(QWidget):
                         msg.get("is_current_user", False)
                     )
                     bubbles.append(bubble)
-                    inserted += bubble.sizeHint().height()
                 self.chat_components['chat'].addBubbles(bubbles)
                 if reset:
-                    QTimer.singleShot(0, self.adjust_scroll)
+                    QTimer.singleShot(50, self.adjust_scroll)  # 延迟滚动，确保尺寸生效
                 elif sb:
                     self.auto_scrolling = True
-                    QTimer.singleShot(0, lambda: sb.setValue(old_val + inserted))
-                    QTimer.singleShot(50, lambda: setattr(self, 'auto_scrolling', False))
+                    inserted = sum(b.sizeHint().height() for b in bubbles)
+                    QTimer.singleShot(50, lambda: sb.setValue(old_val + inserted))
+                    QTimer.singleShot(100, lambda: setattr(self, 'auto_scrolling', False))
             if len(messages) < self.page_size:
                 self.has_more_history = False
             else:
@@ -556,6 +559,27 @@ class ChatWindow(QWidget):
                 asyncio.create_task(self.select_friend(item))
                 break
         self.notification_sender = None
+
+    async def async_show_add_friend(self) -> None:
+        if self.add_friend_dialog and self.add_friend_dialog.isVisible():
+            self.add_friend_dialog.raise_()
+            self.add_friend_dialog.activateWindow()
+            return
+        self.add_friend_dialog = AddFriendDialog(self)
+        self.add_friend_dialog.confirm_btn.clicked.connect(lambda: asyncio.create_task(self.proc_add_friend()))
+        fut = asyncio.get_running_loop().create_future()
+        self.add_friend_dialog.finished.connect(lambda _: fut.set_result(None))
+        self.add_friend_dialog.show()
+        await fut
+        self.add_friend_dialog = None
+
+    async def proc_add_friend(self) -> None:
+        friend_name = self.add_friend_dialog.input.text().strip()
+        if friend_name:
+            res = await self.client.add_friend(friend_name)
+            msg_box = create_themed_message_box(self, "提示", res)
+            msg_box.exec_()
+            self.add_friend_dialog.accept()
 
     def closeEvent(self, event) -> None:
         event.ignore()
