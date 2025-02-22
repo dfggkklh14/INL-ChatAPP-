@@ -276,7 +276,7 @@ class ChatWindow(QWidget):
         if self.chat_components['chat']:
             self.chat_components['chat'].setStyleSheet(f"background-color: {theme['chat_bg']};")
         if self.chat_components.get('input'):
-            style_text_edit(self.chat_components['input'])
+            style_text_edit(self.chat_components['input'].text_edit)
         if self.chat_components.get('send_button'):
             style_button(self.chat_components['send_button'])
         style_list_widget(self.friend_list)
@@ -331,8 +331,7 @@ class ChatWindow(QWidget):
         area_layout.addWidget(self.chat_components['online'])
         area_layout.addWidget(self.chat_components['scroll'])
         self.chat_components['input'] = MessageInput(self)
-        self.chat_components['input'].setPlaceholderText("输入消息")
-        self.chat_components['input'].setFixedHeight(70)
+        self.chat_components['input'].text_edit.setPlaceholderText("输入消息")
         self.chat_components['send_button'] = QPushButton("发送", self)
         self.chat_components['send_button'].setFixedSize(110, 70)
         style_button(self.chat_components['send_button'])
@@ -440,13 +439,13 @@ class ChatWindow(QWidget):
         await self.update_friend_list()
 
     async def send_message(self) -> None:
-        text = self.chat_components['input'].toPlainText().strip()
+        text = self.chat_components['input'].text_edit.toPlainText().strip()
         if not self.client.current_friend or not text:
             return
         await self.client.send_message(self.client.username, self.client.current_friend, text)
         wt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         await self._handle_message(self.client.current_friend, text, True, wt, received=False)
-        self.chat_components['input'].clear()
+        self.chat_components['input'].text_edit.clear()
         self.adjust_scroll()
 
     async def handle_new_message(self, res: dict):
