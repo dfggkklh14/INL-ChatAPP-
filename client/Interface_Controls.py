@@ -1,16 +1,22 @@
 # Interface_Controls.py
+import os
+import asyncio
+from dataclasses import dataclass
+from msilib.schema import SelfReg
+from typing import Optional, Any, List, Tuple
+
+from PIL import Image
+import imageio  # 修改导入，去掉 ffmpeg 插件依赖
+
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QSize, QRect, pyqtSignal
-from PyQt5.QtGui import QPainter, QColor, QFont, QFontMetrics, QPixmap, QPainterPath
+from PyQt5.QtGui import QPainter, QColor, QFont, QFontMetrics, QPixmap, QImage, QIcon, QPainterPath
 from PyQt5.QtWidgets import (
-    QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QSizePolicy, QDialog,
-    QGridLayout, QPushButton, QApplication, QScrollArea, QFrame
+    QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QDialog,
+    QGridLayout, QPushButton, QApplication, QScrollArea, QMessageBox, QMenu, QFileDialog, QSizePolicy, QProgressBar
 )
-from dataclasses import dataclass
-from typing import Optional, Any, List
-import asyncio
 
-# ---------------- 主题 ----------------
+# ---------------- 主题设置 ----------------
 LIGHT_THEME = {
     "BUBBLE_USER": QColor("#aaeb7b"),
     "BUBBLE_OTHER": QColor("#ffffff"),
@@ -36,8 +42,7 @@ LIGHT_THEME = {
     "title_bar_text": "#000000",
 }
 DARK_THEME = {
-    "BUBBLE_USER": LIGHT_THEME["BUBBLE_USER"],
-    "BUBBLE_OTHER": LIGHT_THEME["BUBBLE_OTHER"],
+    **LIGHT_THEME,
     "ONLINE": QColor("#66ff66"),
     "OFFLINE": QColor("#888888"),
     "UNREAD": QColor("#ff6666"),
@@ -47,11 +52,9 @@ DARK_THEME = {
     "button_background": "#3a8f5a",
     "button_hover": "#4aa36c",
     "button_pressed": "#2a6b44",
-    "button_text_color": "#ffffff",
     "line_edit_border": "#555555",
     "line_edit_focus_border": "#4aa36c",
     "text_edit_border": "#555555",
-    "text_edit_focus_border": "#2e8b57",
     "list_background": "#333333",
     "list_item_hover": "#555555",
     "list_item_selected": "#4aa36c",
@@ -92,31 +95,34 @@ theme_manager = ThemeManager()
 FONTS = {
     'MESSAGE': QFont("微软雅黑", 12),
     'TIME': QFont("微软雅黑", 8),
+    'FILE_NAME':QFont("微软雅黑", 10),
+    'FILE_SIZE':QFont("微软雅黑", 8),
     'USERNAME': QFont("微软雅黑", 12, QFont.Bold),
     'ONLINE_SIZE': 10
 }
 
-# ---------------- 样式函数 ----------------
-def circle_button_style(btn: Any) -> None:
-    """设置圆形按钮的样式"""
+# ---------------- 样式工具函数 ----------------
+def style_progress_bar(pb: QProgressBar) -> None:
     t = theme_manager.current_theme
-    btn.setStyleSheet(f"""
-        QPushButton {{
-            background-color: {t['button_background']};
-            border-radius: 15px;
+    pb.setStyleSheet(f"""
+        QProgressBar {{
+            border: 1px solid {t['line_edit_border']};
+            border-radius: 5px;
+            background-color: {t['widget_bg']};
+            text-align: center;
+            color: {t['font_color']};
         }}
-        QPushButton:hover {{
-            background-color: {t['button_hover']};
+        QProgressBar::chunk {{
+            background-color: {t['button_background']};
+            border-radius: 3px;
         }}
     """)
 
 def style_label(label: QLabel) -> None:
-    """设置标签样式"""
     t = theme_manager.current_theme
-    label.setStyleSheet(f"QLabel {{ color: {t['font_color']}; background-color: transparent; }}")
+    label.setStyleSheet(f"color: {t['font_color']}; background-color: transparent;")
 
-def _apply_button_style(btn: Any, radius: Optional[str] = "") -> None:
-    """内部按钮样式设置函数"""
+def _apply_button_style(btn: Any, extra: str = "") -> None:
     t = theme_manager.current_theme
     btn.setStyleSheet(f"""
         QPushButton {{
@@ -124,7 +130,7 @@ def _apply_button_style(btn: Any, radius: Optional[str] = "") -> None:
             border: none;
             color: {t['button_text_color']};
             padding: 0px;
-            {radius}
+            {extra}
         }}
         QPushButton:hover {{ background-color: {t['button_hover']}; }}
         QPushButton:pressed {{ background-color: {t['button_pressed']}; }}
@@ -137,8 +143,19 @@ def style_button(btn: Any) -> None:
 def style_rounded_button(btn: Any) -> None:
     _apply_button_style(btn, "border-radius: 4px;")
 
+def circle_button_style(btn: Any) -> None:
+    t = theme_manager.current_theme
+    btn.setStyleSheet(f"""
+        QPushButton {{
+            background-color: {t['button_background']};
+            border-radius: 15px;
+        }}
+        QPushButton:hover {{
+            background-color: {t['button_hover']};
+        }}
+    """)
+
 def style_line_edit(le: Any, focus: bool = True) -> None:
-    """设置单行编辑框样式"""
     t = theme_manager.current_theme
     style = f"""
         QLineEdit {{
@@ -162,7 +179,6 @@ def style_line_edit(le: Any, focus: bool = True) -> None:
         le.setPalette(pal)
 
 def get_scrollbar_style() -> str:
-    """返回滚动条样式字符串"""
     t = theme_manager.current_theme
     return f"""
     QScrollBar:vertical {{
@@ -182,7 +198,6 @@ def get_scrollbar_style() -> str:
     """
 
 def style_text_edit(te: QTextEdit) -> None:
-    """设置多行文本编辑框样式"""
     t = theme_manager.current_theme
     te.setStyleSheet(f"""
         QTextEdit {{
@@ -197,7 +212,6 @@ def style_text_edit(te: QTextEdit) -> None:
         te.verticalScrollBar().setStyleSheet(get_scrollbar_style())
 
 def style_list_widget(lw: Any) -> None:
-    """设置列表控件样式"""
     t = theme_manager.current_theme
     lw.setStyleSheet(f"""
         QListWidget {{
@@ -220,13 +234,10 @@ def style_list_widget(lw: Any) -> None:
         }}
     """)
 
-def style_scrollbar(sa: Any) -> None:
-    """设置滚动条样式"""
-    sa.setStyleSheet(get_scrollbar_style())
+def style_scrollbar(widget: Any) -> None:
+    widget.setStyleSheet(get_scrollbar_style())
 
-def create_msg_box(parent: QWidget, title: str, text: str) -> 'QMessageBox':
-    """创建消息对话框"""
-    from PyQt5.QtWidgets import QMessageBox
+def create_msg_box(parent: QWidget, title: str, text: str) -> QMessageBox:
     mb = QMessageBox(parent)
     mb.setWindowTitle(title)
     mb.setText(text)
@@ -239,11 +250,73 @@ def create_msg_box(parent: QWidget, title: str, text: str) -> 'QMessageBox':
         style_label(lbl)
     return mb
 
+# ---------------- 实用函数 ----------------
+def create_status_indicator(online: bool) -> QPixmap:
+    size = FONTS['ONLINE_SIZE']
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    color = theme_manager.current_theme['ONLINE'] if online else theme_manager.current_theme['OFFLINE']
+    p.setBrush(color)
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(0, 0, size, size)
+    p.end()
+    return pm
+
+def create_badge(unread: int) -> QPixmap:
+    size = 15
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(theme_manager.current_theme['UNREAD'])
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(0, 0, size, size)
+    p.setPen(QColor("white"))
+    p.setFont(QFont("", 10, QFont.Bold))
+    p.drawText(pm.rect(), Qt.AlignCenter, str(unread))
+    p.end()
+    return pm
+
+def generate_thumbnail(file_path: str, file_type: str, output_dir: str = "thumbnails") -> Optional[str]:
+    """生成图片或视频的缩略图并返回缩略图路径"""
+    os.makedirs(output_dir, exist_ok=True)
+    base_name = os.path.basename(file_path)
+    thumbnail_path = os.path.join(output_dir, f"thumb_{base_name}")
+
+    if not os.path.exists(file_path):
+        print(f"文件不存在: {file_path}")
+        return None
+
+    try:
+        if file_type == 'image':
+            with Image.open(file_path) as img:
+                img.thumbnail((500, 500))
+                ext = os.path.splitext(file_path)[1].lower()
+                format_map = {'.jpg': 'JPEG', '.jpeg': 'JPEG', '.png': 'PNG', '.gif': 'GIF', '.bmp': 'BMP'}
+                fmt = format_map.get(ext, 'JPEG')
+                thumbnail_path += '.jpg' if fmt == 'JPEG' else ext
+                img.convert('RGB').save(thumbnail_path, fmt) if fmt == 'JPEG' else img.save(thumbnail_path, fmt)
+        elif file_type == 'video':
+            thumbnail_path += '.jpg'
+            # 使用 imageio 读取视频第一帧
+            reader = imageio.get_reader(file_path)
+            frame = reader.get_data(0)  # 获取第一帧
+            img = Image.fromarray(frame)
+            img.thumbnail((300, 300), Image.Resampling.LANCZOS)  # 调整大小，保持纵横比
+            img.save(thumbnail_path, "JPEG")
+            reader.close()  # 关闭 reader
+        return thumbnail_path if os.path.exists(thumbnail_path) else None
+    except Exception as e:
+        print(f"生成缩略图失败: {file_path}, 错误: {e}")
+        return None
+
 # ---------------- 自定义控件 ----------------
 class EmoticonPopup(QDialog):
     """
-    表情选择弹窗，采用非模态显示，点击表情后发出信号，
-    当弹窗失去焦点时自动关闭。
+    表情选择弹窗，非模态显示，点击表情后发出信号，
+    弹窗失去焦点时自动关闭。
     """
     emoticonClicked = pyqtSignal(str)
 
@@ -253,27 +326,17 @@ class EmoticonPopup(QDialog):
         self.setWindowTitle("选择表情")
         self.setFocusPolicy(Qt.StrongFocus)
 
-        # 配置参数
-        scroll_area_width = 370
-        scroll_area_height = 250
-        btn_size = 40
-        emo_font_size = "25px"
-        spacing = 5
-
-        # 创建 QScrollArea，固定尺寸，多余表情通过垂直滚动查看（无横向滚动条）
         scroll_area = QScrollArea(self)
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.verticalScrollBar().setStyleSheet(get_scrollbar_style())
-        scroll_area.setFixedSize(scroll_area_width, scroll_area_height)
+        scroll_area.setFixedSize(370, 250)
 
-        # 内容部件及其网格布局，边距和间距较小
         content_widget = QWidget()
         grid_layout = QGridLayout(content_widget)
-        grid_layout.setContentsMargins(spacing, spacing, spacing, spacing)
-        grid_layout.setSpacing(spacing)
+        grid_layout.setContentsMargins(5, 5, 5, 5)
+        grid_layout.setSpacing(5)
 
-        # 定义大量表情
         emoticons = [
             "😀", "😁", "😂", "🤣", "😃", "😄", "😅", "😆",
             "😉", "😊", "😋", "😎", "😍", "😘", "🥰", "😗",
@@ -295,10 +358,9 @@ class EmoticonPopup(QDialog):
             "🍅", "🥕", "🥔", "🍠", "🍗", "🍖", "🍤", "🍖",
             "🍛", "🍜", "🍣", "🍲", "🥗", "🍙", "🍚", "🍘"
         ]
-        # 计算每行可容纳的表情个数
-        max_cols = scroll_area_width // (btn_size + spacing)
-        row, col = 0, 0
-        # 设置抗锯齿字体
+        btn_size = 40
+        max_cols = scroll_area.width() // (btn_size + 5)
+        row = col = 0
         font = QFont(FONTS['MESSAGE'])
         font.setHintingPreference(QFont.PreferNoHinting)
         font.setStyleStrategy(QFont.PreferAntialias)
@@ -306,8 +368,7 @@ class EmoticonPopup(QDialog):
             btn = QPushButton(emo, content_widget)
             btn.setFixedSize(btn_size, btn_size)
             btn.setFont(font)
-            btn.setStyleSheet(f"font-size: {emo_font_size}; border: none; background: transparent;")
-            # 使用默认参数捕获当前 emo，发出信号
+            btn.setStyleSheet("font-size: 25px; border: none; background: transparent;")
             btn.clicked.connect(lambda checked, e=emo: self.emoticonClicked.emit(e))
             grid_layout.addWidget(btn, row, col)
             col += 1
@@ -318,7 +379,6 @@ class EmoticonPopup(QDialog):
         content_widget.setLayout(grid_layout)
         scroll_area.setWidget(content_widget)
 
-        # 主布局设置
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll_area)
@@ -326,14 +386,11 @@ class EmoticonPopup(QDialog):
         self.setFixedSize(scroll_area.size())
 
     def focusOutEvent(self, event) -> None:
-        """当弹窗失去焦点时自动关闭"""
         super().focusOutEvent(event)
         self.close()
 
-# 重写 QTextEdit，处理回车发送消息（不带 Shift 时发射信号）
 class CustomTextEdit(QTextEdit):
     sendMessage = pyqtSignal()
-
     def keyPressEvent(self, event) -> None:
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (event.modifiers() & Qt.ShiftModifier):
             event.accept()
@@ -342,10 +399,6 @@ class CustomTextEdit(QTextEdit):
             super().keyPressEvent(event)
 
 class MessageInput(QWidget):
-    """
-    消息输入控件，包含自定义文本输入框与表情按钮以及新增的“+”按钮，
-    支持回车发送与弹出表情选择器（表情弹窗在失去焦点时关闭）。
-    """
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setFixedHeight(70)
@@ -365,50 +418,64 @@ class MessageInput(QWidget):
         self.plus_button = QPushButton("+", self)
         self.plus_button.setFixedSize(30, 35)
         style_button(self.plus_button)
+        self.plus_button.clicked.connect(self.show_plus_menu)
 
-        # 使用网格布局：左侧为两个按钮（各占一行），右侧为文本输入框
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-
-        # 将按钮添加到网格，确保在格子内水平居中
-        layout.addWidget(self.emoticon_button, 0, 0, Qt.AlignHCenter)  # 第 0 行，第 0 列，水平居中
-        layout.addWidget(self.plus_button, 1, 0, Qt.AlignHCenter)      # 第 1 行，第 0 列，水平居中
-        layout.addWidget(self.text_edit, 0, 1, 2, 1)                   # 第 0-1 行，第 1 列
-
-        # 设置行高，确保每行 35 像素
+        layout.addWidget(self.emoticon_button, 0, 0, Qt.AlignHCenter)
+        layout.addWidget(self.plus_button, 1, 0, Qt.AlignHCenter)
+        layout.addWidget(self.text_edit, 0, 1, 2, 1)
         layout.setRowMinimumHeight(0, 35)
         layout.setRowMinimumHeight(1, 35)
-
-        # 设置列伸缩性
-        layout.setColumnStretch(0, 0)  # 第 0 列固定宽度
-        layout.setColumnStretch(1, 1)  # 第 1 列伸缩
+        layout.setColumnStretch(0, 0)
+        layout.setColumnStretch(1, 1)
         self.setLayout(layout)
 
         self.popup: Optional[EmoticonPopup] = None
 
     def on_send_message(self) -> None:
-        """调用顶层窗口的发送方法"""
         parent_obj = self.window()
-        if parent_obj is not None and hasattr(parent_obj, "send_message"):
+        if parent_obj and hasattr(parent_obj, "send_message"):
             asyncio.create_task(parent_obj.send_message())
 
     def show_emoticon_popup(self) -> None:
-        """显示表情弹窗，定位在输入框与按钮上方"""
-        print("Showing emoticon popup")  # 调试日志
         self.popup = EmoticonPopup(self)
         self.popup.emoticonClicked.connect(self.insert_emoticon)
         self.popup.adjustSize()
-        button_global_top_left = self.emoticon_button.mapToGlobal(self.emoticon_button.rect().topLeft())
-        self.popup.move(button_global_top_left.x(), button_global_top_left.y() - self.popup.height())
+        btn_pos = self.emoticon_button.mapToGlobal(self.emoticon_button.rect().topLeft())
+        self.popup.move(btn_pos.x(), btn_pos.y() - self.popup.height())
         self.popup.show()
 
     def insert_emoticon(self, emo: str) -> None:
-        """在文本框当前光标处插入选中的表情"""
         cursor = self.text_edit.textCursor()
         cursor.insertText(emo)
         self.text_edit.setTextCursor(cursor)
 
+    def show_plus_menu(self):
+        menu = QMenu(self)
+        file_filters = {
+            'file': ("文件", "所有文件 (*.*)"),
+            'image': ("图片", "图片文件 (*.jpg *.jpeg *.png *.gif *.bmp)"),
+            'video': ("视频", "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv)")
+        }
+        for f_type, (label, filt) in file_filters.items():
+            menu.addAction(label, lambda ft=f_type: self.send_file(ft))
+        menu.exec_(self.plus_button.mapToGlobal(self.plus_button.rect().bottomLeft()))
+
+    def send_file(self, file_type: str):
+        filters = {
+            'file': "所有文件 (*.*)",
+            'image': "图片文件 (*.jpg *.jpeg *.png *.gif *.bmp)",
+            'video': "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv)"
+        }
+        file_path, _ = QFileDialog.getOpenFileName(self, f"选择{file_type}", "", filters.get(file_type, ""))
+        if file_path:
+            chat_window = self.window()
+            if chat_window and hasattr(chat_window, 'send_media'):
+                asyncio.create_task(chat_window.send_media(file_path, file_type))
+            else:
+                QMessageBox.critical(self, "错误", "无法发送文件：未找到聊天窗口")
 
 class FriendItemWidget(QWidget):
     """
@@ -430,28 +497,21 @@ class FriendItemWidget(QWidget):
 
         self.name_label = QLabel(self)
         self.name_label.setFont(FONTS['USERNAME'])
-        # 不设置固定宽度，宽度将在 update_display 中动态计算
 
         self.badge_label = QLabel(self)
         self.badge_label.setFixedSize(15, 15)
 
         layout.addWidget(self.status_label)
         layout.addWidget(self.name_label)
-        layout.addStretch()  # 保持弹性空间将 badge_label 推向右侧
+        layout.addStretch()
         layout.addWidget(self.badge_label)
         self.setLayout(layout)
 
     def update_display(self) -> None:
-        # 更新状态图标
         self.status_label.setPixmap(create_status_indicator(self.online) if self.online else QPixmap())
-
-        # 设置用户名并调整宽度
         self.name_label.setText(self.username)
-        font_metrics = QFontMetrics(self.name_label.font())  # 获取字体度量
-        text_width = font_metrics.horizontalAdvance(self.username)  # 计算文本宽度
-        self.name_label.setFixedWidth(text_width)  # 设置为文本实际宽度
-
-        # 更新未读消息徽标
+        metrics = QFontMetrics(self.name_label.font())
+        self.name_label.setFixedWidth(metrics.horizontalAdvance(self.username))
         self.badge_label.setPixmap(create_badge(self.unread) if self.unread > 0 else QPixmap())
 
     def update_theme(self, theme: dict) -> None:
@@ -462,35 +522,6 @@ class FriendItemWidget(QWidget):
         if not sip.isdeleted(self.status_label):
             self.status_label.setStyleSheet("background-color: transparent;")
         self.update_display()
-
-def create_status_indicator(online: bool) -> QPixmap:
-    """生成状态指示图标"""
-    size = FONTS['ONLINE_SIZE']
-    pm = QPixmap(size, size)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(theme_manager.current_theme['ONLINE'] if online else theme_manager.current_theme['OFFLINE'])
-    p.setPen(Qt.NoPen)
-    p.drawEllipse(0, 0, size, size)
-    p.end()
-    return pm
-
-def create_badge(unread: int) -> QPixmap:
-    """生成未读消息徽标"""
-    size = 15
-    pm = QPixmap(size, size)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(theme_manager.current_theme['UNREAD'])
-    p.setPen(Qt.NoPen)
-    p.drawEllipse(0, 0, size, size)
-    p.setPen(QColor("white"))
-    p.setFont(QFont("", 10, QFont.Bold))
-    p.drawText(pm.rect(), Qt.AlignCenter, str(unread))
-    p.end()
-    return pm
 
 class OnLine(QWidget):
     """
@@ -509,10 +540,12 @@ class OnLine(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(2)
+
         self.username_label = QLabel(self)
         self.username_label.setFont(self.username_font)
         self.username_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         layout.addWidget(self.username_label)
+
         hl = QHBoxLayout()
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(5)
@@ -555,159 +588,404 @@ class ChatAreaWidget(QWidget):
         self.bubble_containers: List[QWidget] = []
         self.setLayout(layout)
         self.newBubblesAdded.connect(self.update)
+        # 使用当前宽度或默认值初始化聊天区域宽度
+        ChatBubbleWidget.config.chat_area_width = self.width() or 650
 
-    def addBubble(self, bubble: QWidget) -> None:
-        wrap = QWidget()
-        hl = QHBoxLayout(wrap)
+    def _wrap_bubble(self, bubble: QWidget) -> QWidget:
+        """
+        将气泡控件包装在一个水平容器中，根据气泡的对齐属性自动添加伸缩空间。
+        """
+        container = QWidget(self)
+        hl = QHBoxLayout(container)
         hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(0)
         if getattr(bubble, "align", "left") == "right":
             hl.addStretch()
             hl.addWidget(bubble)
         else:
             hl.addWidget(bubble)
             hl.addStretch()
-        self.layout().addWidget(wrap)
-        self.layout().update()
-        self.updateGeometry()
+        return container
+
+    def addBubble(self, bubble: QWidget) -> None:
+        container = self._wrap_bubble(bubble)
+        self.layout().addWidget(container)
+        bubble.updateBubbleSize()
 
     def addBubbles(self, bubbles: List[QWidget]) -> None:
         for bubble in bubbles:
-            cont = QWidget(self)
-            hl = QHBoxLayout(cont)
-            hl.setContentsMargins(0, 0, 0, 0)
-            hl.setSpacing(0)
-            if hasattr(bubble, "align") and bubble.align == "right":
-                hl.addStretch()
-                hl.addWidget(bubble)
-            else:
-                hl.addWidget(bubble)
-                hl.addStretch()
-            self.bubble_containers.insert(0, cont)
-            self.layout().insertWidget(0, cont)
+            container = self._wrap_bubble(bubble)
+            self.bubble_containers.insert(0, container)
+            self.layout().insertWidget(0, container)
+            bubble.updateBubbleSize()
         self.newBubblesAdded.emit()
 
-    def resizeEvent(self, e: Any) -> None:
-        ChatBubbleWidget.config.chat_area_width = self.width()
-        for cont in self.bubble_containers:
-            for i in range(cont.layout().count()):
-                w = cont.layout().itemAt(i).widget()
-                if isinstance(w, ChatBubbleWidget):
-                    w.updateBubbleSize()
-        super().resizeEvent(e)
+    def resizeEvent(self, event: Any) -> None:
+        ChatBubbleWidget.config.chat_area_width = self.width()  # 动态更新宽度
+        for container in self.bubble_containers:
+            for i in range(container.layout().count()):
+                widget = container.layout().itemAt(i).widget()
+                if isinstance(widget, ChatBubbleWidget):
+                    widget.updateBubbleSize()
+        super().resizeEvent(event)
 
 @dataclass
 class BubbleConfig:
     chat_area_width: int = 650
-    h_padding: int = 8
+    h_padding: int = 5
     v_padding: int = 5
-    gap: int = 3
+    time_padding: int = 8
+    gap: int = 5
     triangle_size: int = 10
     triangle_height: int = 10
+    file_h_padding: int = 5      # 文件消息独立的左右边距
+    file_v_padding: int = 5      # 文件消息独立的上下边距
 
 class ChatBubbleWidget(QWidget):
-    """
-    聊天气泡控件，根据消息内容与时间自动计算尺寸，并绘制气泡背景和对话三角形。
-    """
     config: BubbleConfig = BubbleConfig()
 
     def __init__(self, message: str, time_str: str, align: str = 'left', is_current_user: bool = False,
+                 message_type: str = 'text', file_id: Optional[str] = None, original_file_name: Optional[str] = None,
+                 thumbnail_path: Optional[str] = None, file_size: Optional[str] = None, duration: Optional[str] = None,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.align = "right" if is_current_user else align
         self.is_current_user = is_current_user
         self.message = self._insertZeroWidthSpace(message)
         self.time_str = time_str
+        self.message_type = message_type
+        self.file_id = file_id
+        self.original_file_name = original_file_name
+        self.thumbnail_path = thumbnail_path
+        self.file_size = file_size
+        self.duration = duration
         self.bubble_color = LIGHT_THEME["BUBBLE_USER"] if self.is_current_user else LIGHT_THEME["BUBBLE_OTHER"]
+        self.progress_bar = None  # 新增进度条属性
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self._init_ui()
 
     def _init_ui(self) -> None:
-        # 配置消息和时间的字体（开启抗锯齿）
-        font_message = QFont(FONTS['MESSAGE'])
-        font_message.setHintingPreference(QFont.PreferNoHinting)
-        font_message.setStyleStrategy(QFont.PreferAntialias)
+        self.font_message = QFont(FONTS['MESSAGE'])
+        self.font_message.setHintingPreference(QFont.PreferNoHinting)
+        self.font_message.setStyleStrategy(QFont.PreferAntialias)
+        self.font_time = QFont(FONTS['TIME'])
+        self.font_time.setHintingPreference(QFont.PreferNoHinting)
+        self.font_time.setStyleStrategy(QFont.PreferAntialias)
 
-        font_time = QFont(FONTS['TIME'])
-        font_time.setHintingPreference(QFont.PreferNoHinting)
-        font_time.setStyleStrategy(QFont.PreferAntialias)
+        if self.message_type == 'text':
+            self.add_text()
+        elif self.message_type == 'image':
+            self.add_image()
+        elif self.message_type == 'video':
+            self.add_video()
+        elif self.message_type == 'file':
+            self.sdd_file()
+        else:
+            self.content_widget = QTextEdit(self)
+            self.content_widget.setFont(self.font_message)
+            self.content_widget.setStyleSheet("background: transparent; border: none;")
+            self.content_widget.setReadOnly(True)
+            self.content_widget.setPlainText(self.message)
 
-        # 消息文本编辑框设置（只读、无边框）
-        self.text_message = QTextEdit(self)
-        self.text_message.setFont(font_message)
-        self.text_message.setStyleSheet("background: transparent; border: none;")
-        self.text_message.setReadOnly(True)
-        self.text_message.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.text_message.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.text_message.setPlainText(self.message)
-
-        # 时间标签设置
         self.label_time = QLabel(self)
-        self.label_time.setFont(font_time)
+        self.label_time.setFont(self.font_time)
         self.label_time.setStyleSheet("background: transparent; border: none;")
         self.label_time.setTextInteractionFlags(Qt.NoTextInteraction)
         self.label_time.setText(self.time_str)
 
         self._bubble_rect = QRect()
+        self._setup_progress_bar()  # 新增进度条初始化
+
+    def _setup_progress_bar(self) -> None:
+        """初始化进度条，初始隐藏"""
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFixedHeight(10)
+        style_progress_bar(self.progress_bar)
+        self.progress_bar.hide()
+
+    def update_progress(self, value: float) -> None:
+        """更新进度条值"""
+        if self.progress_bar:
+            self.progress_bar.setValue(int(value))
+            self.progress_bar.show()
+            self.updateBubbleSize()
+
+    def complete_progress(self) -> None:
+        """完成时隐藏并销毁进度条"""
+        if self.progress_bar:
+            self.progress_bar.hide()
+            self.progress_bar.deleteLater()
+            self.progress_bar = None
+            self.updateBubbleSize()
+
+    def add_text(self):
+        self.content_widget = QLabel(self)
+        self.content_widget.setFont(self.font_message)
+        self.content_widget.setStyleSheet("background: transparent; border: none;")
+        self.content_widget.setText(self.message)
+        self.content_widget.setWordWrap(True)
+        # 根据对齐方向设置文本对齐
+        self.content_widget.setAlignment(
+            Qt.AlignRight | Qt.AlignTop if self.align == "left" else Qt.AlignLeft | Qt.AlignTop)
+
+    def add_image(self):
+        self.content_widget = QLabel(self)
+        self.content_widget.setStyleSheet("background: transparent; border: none;")
+        if self.thumbnail_path and os.path.exists(self.thumbnail_path):
+            image = QImage(self.thumbnail_path)
+            scaled_image = image.scaledToHeight(300, Qt.SmoothTransformation)
+            pixmap = QPixmap.fromImage(scaled_image)
+            rounded = self._roundedPixmap(pixmap, radius=8)
+            self.content_widget.setPixmap(rounded)
+        else:
+            self.content_widget.setText("图片加载失败")
+        self.content_widget.setAlignment(Qt.AlignCenter)
+
+    def add_video(self):
+        self.content_widget = QWidget(self)
+        self.content_widget.setStyleSheet("background: transparent; border: none;")
+        video_layout = QHBoxLayout(self.content_widget)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.setSpacing(5)
+        self.thumbnail_label = QLabel(self)
+        self.thumbnail_label.setStyleSheet("background: transparent; border: none;")
+        if self.thumbnail_path and os.path.exists(self.thumbnail_path):
+            pixmap = QPixmap(self.thumbnail_path).scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            rounded_pixmap = self._roundedPixmap(pixmap, radius=8)  # 添加圆角处理
+            self.thumbnail_label.setPixmap(rounded_pixmap if not rounded_pixmap.isNull() else QPixmap())
+        if self.thumbnail_label.pixmap() is None or self.thumbnail_label.pixmap().isNull():
+            self.thumbnail_label.setText(f"{self.original_file_name or '视频'} (缩略图不可用)")
+        self.play_button = QPushButton("播放", self)
+        self.play_button.setFixedSize(50, 30)
+        style_button(self.play_button)
+        self.play_button.clicked.connect(self.play_video)
+        video_layout.addWidget(self.thumbnail_label)
+        video_layout.addWidget(self.play_button)
+
+    def sdd_file(self):
+        self.content_widget = QWidget(self)
+        self.content_widget.setStyleSheet("background: transparent; border: none;")
+        # 使用文件消息独立的边距
+        file_layout = QHBoxLayout(self.content_widget)
+        file_layout.setContentsMargins(self.config.file_h_padding,
+                                       self.config.file_v_padding,
+                                       self.config.file_h_padding,
+                                       self.config.file_v_padding)
+        file_layout.setSpacing(5)
+
+        # 文件图标
+        self.file_icon = QLabel(self)
+        self.file_icon.setStyleSheet("background: transparent; border: none;")
+        self.file_icon.setPixmap(QIcon("icon.ico").pixmap(40, 40))
+        self.file_icon.setFixedSize(40, 40)
+
+        # 文件信息容器
+        self.file_info_widget = QWidget(self)
+        file_info_layout = QVBoxLayout(self.file_info_widget)
+        file_info_layout.setContentsMargins(0, 0, 0, 0)
+        file_info_layout.setSpacing(2)
+
+        # 文件名：使用 FONTS['TIME'] 字体，单行显示，超长部分省略，并在悬浮时显示完整内容
+        self.file_name_label = QLabel(self)
+        font = QFont(FONTS['FILE_NAME'])
+        font.setBold(True)  # 设置字体为粗体
+        self.file_name_label.setFont(font)  # 应用加粗后的字体
+        self.file_name_label.setStyleSheet("background: transparent; border: none;")
+        self.file_name_label.setWordWrap(False)
+        self.file_name_label.setText(self.original_file_name or "未知文件")
+
+        # 文件大小
+        self.file_size_label = QLabel(self)
+        self.file_size_label.setFont(self.font_time)
+        font = QFont(FONTS['FILE_SIZE'])
+        self.file_size_label.setFont(font)
+        self.file_size_label.setStyleSheet("background: transparent; border: none;")
+        self.file_size_label.setText(self.file_size or "未知大小")
+
+        file_info_layout.addWidget(self.file_name_label)
+        file_info_layout.addWidget(self.file_size_label)
+
+        # 根据发送者调整布局：自己发的图标在左，对方发的图标在右
+        if self.is_current_user:
+            file_layout.addWidget(self.file_icon)
+            file_layout.addWidget(self.file_info_widget)
+            file_layout.setAlignment(self.file_icon, Qt.AlignLeft | Qt.AlignVCenter)
+            file_layout.setAlignment(self.file_info_widget, Qt.AlignLeft | Qt.AlignVCenter)
+        else:
+            file_layout.addWidget(self.file_info_widget)
+            file_layout.addWidget(self.file_icon)
+            file_layout.setAlignment(self.file_info_widget, Qt.AlignRight | Qt.AlignVCenter)
+            file_layout.setAlignment(self.file_icon, Qt.AlignRight | Qt.AlignVCenter)
+
+    def _roundedPixmap(self, pixmap: QPixmap, radius: int) -> QPixmap:
+        rounded = QPixmap(pixmap.size())
+        rounded.fill(Qt.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, pixmap.width(), pixmap.height(), radius, radius)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+        return rounded
 
     def _insertZeroWidthSpace(self, text: str) -> str:
-        """在每行中插入零宽空格（防止长单词导致换行问题）"""
-        return '\n'.join(("\u200B".join(line) if ' ' not in line else line) for line in text.split('\n'))
+        # 分割行并移除末尾空行
+        lines = text.rstrip('\n').split('\n')
+        return '\n'.join(("\u200B".join(line) if ' ' not in line else line) for line in lines)
 
-    def _calculateSizes(self) -> tuple[QSize, QSize, QSize, int]:
-        available = int(self.config.chat_area_width * 0.6)
-        fm_msg = QFontMetrics(FONTS['MESSAGE'])
-        natural = fm_msg.horizontalAdvance(self.message.replace('\u200B', ''))
-        lines = self.message.split('\n')
-        total = fm_msg.height() * len(lines)
-        if natural < available:
-            self.text_message.setFixedWidth(natural + 2 * self.config.h_padding)
-            chosen, text_size = natural, QSize(natural, total)
+    def _calculateSizes(self) -> Tuple[QSize, QSize, QSize, int]:
+        """
+        计算气泡、内容和时间的尺寸，进度条（如果显示）位于时间戳上方。
+        返回: (bubble_size, content_size, time_size, content_width)
+            - bubble_size: 整个气泡的尺寸（宽高）
+            - content_size: 内容区域的尺寸（宽高）
+            - time_size: 时间文本的尺寸（宽高）
+            - content_width: 内容区域的实际宽度（用于定位）
+        """
+        # 最大可用宽度（聊天区域的60%）
+        available_width = int(self.config.chat_area_width * 0.6)
+
+        # 计算时间文本尺寸
+        fm_time = QFontMetrics(self.font_time)
+        time_width = fm_time.horizontalAdvance(self.time_str) + 4  # 加点余量
+        time_height = fm_time.height()
+        time_size = QSize(time_width, time_height)
+        min_content_width = time_width + self.config.time_padding  # 内容最小宽度基于时间
+
+        # 根据消息类型计算内容尺寸
+        if self.message_type == 'text':
+            # 文本消息
+            fm_msg = QFontMetrics(self.font_message)
+            natural_width = fm_msg.boundingRect(0, 0, 0, 0, Qt.TextSingleLine, self.message).width()
+            content_width = min(max(natural_width, min_content_width), available_width)
+            self.content_widget.setFixedWidth(content_width)
+            content_height = fm_msg.boundingRect(
+                0, 0, content_width, 0, Qt.TextWordWrap, self.message.rstrip('\n')
+            ).height() or fm_msg.height()  # 空文本时至少一行高
+            content_size = QSize(content_width, content_height)
+
+        elif self.message_type in ('image', 'video'):
+            # 图片或视频消息
+            if self.thumbnail_path and os.path.exists(self.thumbnail_path):
+                pixmap = QPixmap(self.thumbnail_path)
+                content_width = min(pixmap.scaledToHeight(300, Qt.SmoothTransformation).width(), 300)
+                content_height = 300
+            else:
+                fm_msg = QFontMetrics(FONTS['MESSAGE'])
+                base_text = self.original_file_name or "视频缩略图不可用"
+                content_width = min(fm_msg.horizontalAdvance(base_text), available_width)
+                content_height = 300
+            if self.message_type == 'video':
+                content_width += 50  # 播放按钮宽度
+            content_size = QSize(content_width, content_height)
+            self.content_widget.adjustSize()
+
+        elif self.message_type == 'file':
+            # 文件消息
+            max_width = available_width
+            fm_file = QFontMetrics(self.file_name_label.font())
+            full_name = self.original_file_name or "未知文件"
+            elided_name = fm_file.elidedText(full_name, Qt.ElideRight, max_width)
+            self.file_name_label.setText(elided_name)
+            self.file_name_label.setToolTip(full_name)
+            self.file_name_label.setMaximumWidth(max_width)
+            self.file_size_label.setText(self.file_size or "未知大小")
+            self.file_name_label.adjustSize()
+            self.file_size_label.adjustSize()
+            self.file_info_widget.adjustSize()
+            self.content_widget.adjustSize()
+            content_size = self.content_widget.sizeHint()
+            content_width = content_size.width()
+
         else:
-            self.text_message.setFixedWidth(available + 2 * self.config.h_padding)
-            self.text_message.document().setTextWidth(available)
-            text_size = self.text_message.document().size().toSize()
-            chosen = available
-        fm_time = QFontMetrics(FONTS['TIME'])
-        time_w = fm_time.horizontalAdvance(self.time_str) + 4
-        time_size = QSize(time_w, fm_time.height())
-        content_width = max(chosen, time_w)
-        bubble_w = content_width + 2 * self.config.h_padding
-        bubble_h = text_size.height() + fm_time.height() + 2 * self.config.v_padding + self.config.gap
-        return QSize(bubble_w, bubble_h), text_size, time_size, chosen
+            # 默认情况
+            content_size = QSize(0, 0)
+            content_width = min_content_width
+
+        # 计算气泡整体尺寸（内容 -> 进度条 -> 时间）
+        if self.message_type in ('file', 'image', 'video'):
+            padding_h = self.config.file_h_padding
+            padding_v = self.config.file_v_padding
+            bubble_width = content_width + 2 * padding_h
+            bubble_height = content_size.height() + padding_v  # 内容高度加上顶部内边距
+            if self.progress_bar and self.progress_bar.isVisible():
+                bubble_height += self.progress_bar.height() + self.config.gap  # 进度条高度
+            bubble_height += time_size.height() + self.config.gap  # 时间戳高度
+        else:
+            padding_h = self.config.h_padding
+            padding_v = self.config.v_padding
+            bubble_width = max(content_width, time_width) + 2 * padding_h
+            bubble_height = content_size.height() + padding_v + time_size.height() + self.config.gap
+
+        bubble_size = QSize(bubble_width, bubble_height)
+        return bubble_size, content_size, time_size, content_width
 
     def sizeHint(self) -> QSize:
-        s, _, tsize, _ = self._calculateSizes()
-        # 确保宽度包含三角形和时间戳
-        return QSize(max(s.width() + self.config.triangle_size,
-                         tsize.width() + self.config.triangle_size + self.config.h_padding * 2),s.height())
+        bubble_size, _, _, _ = self._calculateSizes()
+        return QSize(bubble_size.width() + self.config.triangle_size, bubble_size.height())
 
     def updateBubbleSize(self) -> None:
-        bubble, text, tsize, chosen = self._calculateSizes()
+        """根据计算的尺寸更新气泡布局，进度条在时间戳上方"""
+        bubble_size, content_size, time_size, content_width = self._calculateSizes()
         bx = 0 if self.align == "right" else self.config.triangle_size
-        self._bubble_rect = QRect(bx, 0, bubble.width(), bubble.height())
-        self.text_message.setGeometry(bx + self.config.h_padding, self.config.v_padding, chosen, text.height())
-        if self.align == "right":
-            tx = bx + self.config.h_padding
+        self._bubble_rect = QRect(bx, 0, bubble_size.width(), bubble_size.height())
+
+        # 设置内边距
+        h_pad = self.config.file_h_padding if self.message_type == 'file' else self.config.h_padding
+        v_pad = self.config.file_v_padding if self.message_type == 'file' else self.config.v_padding
+
+        # 计算各部分的Y坐标（内容 -> 进度条 -> 时间）
+        content_y = v_pad
+        if self.progress_bar and self.progress_bar.isVisible():
+            progress_y = content_y + content_size.height() + self.config.gap
+            time_y = progress_y + self.progress_bar.height() + self.config.gap
         else:
-            tx = min(bx + bubble.width() - self.config.h_padding - tsize.width(),
-                     self.width() - tsize.width() - self.config.h_padding)  # 限制不超过控件宽度
-        self.label_time.setGeometry(tx, self.config.v_padding + text.height() + self.config.gap,
-                                    tsize.width(), tsize.height())
-        ns = QSize(bubble.width() + self.config.triangle_size, bubble.height())
-        if self.size() != ns:
-            self.setFixedSize(ns)
+            progress_y = content_y  # 无进度条时占位
+            time_y = content_y + content_size.height() + self.config.gap
+
+        # 计算X坐标（根据对齐方向）
+        bubble_right = bx + bubble_size.width()
+        if self.align == "right":
+            content_x = bx + h_pad
+            time_x = content_x
+            progress_x = content_x
+        else:
+            content_x = bubble_right - content_width - h_pad
+            time_x = bubble_right - time_size.width() - h_pad
+            progress_x = content_x
+
+        # 限制X坐标范围
+        content_x = max(bx + h_pad, min(content_x, bubble_right - content_width - h_pad))
+        time_x = max(bx + h_pad, min(time_x, bubble_right - time_size.width() - h_pad))
+
+        # 更新控件位置和大小
+        self.content_widget.move(content_x, content_y)
+        self.content_widget.setFixedSize(content_width, content_size.height())
+        self.label_time.move(time_x, time_y)
+        self.label_time.setFixedSize(time_size.width(), time_size.height())
+        if self.progress_bar and self.progress_bar.isVisible():
+            self.progress_bar.move(progress_x, progress_y)
+            self.progress_bar.setFixedWidth(content_width)
+
+        # 设置气泡整体大小
+        new_size = QSize(bubble_size.width() + self.config.triangle_size, bubble_size.height())
+        if self.size() != new_size:
+            self.setFixedSize(new_size)
         self.update()
 
-    def resizeEvent(self, e: Any) -> None:
+    def resizeEvent(self, event: Any) -> None:
         self.updateBubbleSize()
-        super().resizeEvent(e)
+        super().resizeEvent(event)
 
-    def paintEvent(self, e: Any) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(self.bubble_color)
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(self._bubble_rect, 10, 10)
+    def paintEvent(self, event: Any) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(self.bubble_color)
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(self._bubble_rect, 10, 10)
         ty = self._bubble_rect.top() + (self._bubble_rect.height() - self.config.triangle_height) // 2
         path = QPainterPath()
         if self.align == "right":
@@ -719,5 +997,30 @@ class ChatBubbleWidget(QWidget):
             path.lineTo(self._bubble_rect.left(), ty)
             path.lineTo(self._bubble_rect.left(), ty + self.config.triangle_height)
         path.closeSubpath()
-        p.drawPath(path)
-        super().paintEvent(e)
+        painter.drawPath(path)
+        super().paintEvent(event)
+
+    def play_video(self) -> None:
+        if self.file_id:
+            asyncio.create_task(self.download_and_play_video(self.file_id))
+
+    async def download_and_play_video(self, file_id: str) -> None:
+        save_path = f"temp_video_{file_id}.mp4"
+
+        # 设置下载进度回调
+        async def progress_callback(type_, progress, filename):
+            if type_ == "download":
+                self.update_progress(progress)
+                QApplication.processEvents()
+
+        self.window().client.set_progress_callback(progress_callback)
+
+        result = await self.window().client.download_media(file_id, save_path)
+        self.window().client.set_progress_callback(None)
+
+        if result.get("status") == "success":
+            self.complete_progress()
+            os.startfile(save_path)
+        else:
+            self.complete_progress()
+            QMessageBox.critical(self, "错误", "视频下载失败")
