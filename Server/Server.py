@@ -6,6 +6,12 @@ import threading
 import json
 from datetime import datetime
 import logging
+from io import BytesIO
+import os
+import base64
+
+import imageio
+from PIL import Image
 from cryptography.fernet import Fernet
 
 # 配置日志记录
@@ -14,7 +20,7 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(me
 # 配置
 SERVER_CONFIG = {
     'HOST': '26.102.137.22',
-    'PORT': 10026,
+    'PORT': 13746,
     'DB_PATH': r'D:\AppTests\fy\chat_server.db',
     'LOGGING': {
         'LEVEL': logging.DEBUG,
@@ -28,6 +34,7 @@ fernet = Fernet(ENCRYPTION_KEY)
 
 # 全局变量：存储已登录用户与对应的 socket
 clients = {}
+upload_sessions = {}
 clients_lock = threading.Lock()
 
 
@@ -43,13 +50,14 @@ def get_db_connection() -> sqlite3.Connection:
 
 
 def init_db():
-    """初始化数据库，创建必要的表"""
+    """初始化数据库，创建必要的表，并扩展媒体消息字段"""
     conn = get_db_connection()
     if not conn:
         return
     try:
         with conn:
             cursor = conn.cursor()
+            # 创建用户、好友、消息表（如果不存在）
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     username TEXT PRIMARY KEY,
@@ -75,6 +83,21 @@ def init_db():
                     FOREIGN KEY(receiver) REFERENCES users(username)
                 )
             ''')
+            # 检查并扩展媒体附件字段（如果不存在则添加）
+            cursor.execute("PRAGMA table_info(messages)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if "attachment_type" not in columns:
+                cursor.execute("ALTER TABLE messages ADD COLUMN attachment_type TEXT")
+            if "attachment_path" not in columns:
+                cursor.execute("ALTER TABLE messages ADD COLUMN attachment_path TEXT")
+            if "original_file_name" not in columns:
+                cursor.execute("ALTER TABLE messages ADD COLUMN original_file_name TEXT")
+            if "thumbnail_path" not in columns:
+                cursor.execute("ALTER TABLE messages ADD COLUMN thumbnail_path TEXT")
+            if "file_size" not in columns:
+                cursor.execute("ALTER TABLE messages ADD COLUMN file_size INTEGER")
+            if "duration" not in columns:
+                cursor.execute("ALTER TABLE messages ADD COLUMN duration REAL")
     except sqlite3.Error as e:
         logging.error(f"数据库初始化失败: {e}")
     finally:
@@ -232,8 +255,146 @@ def send_message(request: dict, client_sock: socket.socket) -> dict:
     return {"type": "send_message", "status": "success", "message": f"消息已发送给 {to_user}", "request_id": request_id}
 
 
+def send_media(request: dict, client_sock: socket.socket) -> dict:
+    """处理发送媒体消息，支持分块传输"""
+    from_user = request.get("from")
+    to_user = request.get("to")
+    original_file_name = request.get("file_name")
+    file_type = request.get("file_type")
+    request_id = request.get("request_id")
+    file_data_b64 = request.get("file_data", "")
+    total_size = request.get("total_size", 0)
+    sent_size = request.get("sent_size", 0)
+
+    upload_dir = os.path.join("user_data", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    unique_file_name = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{original_file_name}"
+    file_path = os.path.join(upload_dir, unique_file_name)
+
+    # 如果是第一个分块或完整文件
+    if request_id not in upload_sessions:
+        upload_sessions[request_id] = {
+            "file_path": file_path,
+            "total_size": total_size,
+            "received_size": 0
+        }
+
+    session = upload_sessions[request_id]
+
+    # 如果有数据，写入文件
+    if file_data_b64:
+        try:
+            file_data = base64.b64decode(file_data_b64)
+            with open(session["file_path"], "ab") as f:
+                f.write(file_data)
+            session["received_size"] += len(file_data)
+        except Exception as e:
+            logging.error(f"文件写入失败: {e}")
+            return {"type": "send_media", "status": "error", "message": "文件写入失败", "request_id": request_id}
+    else:
+        # 传输完成，处理文件
+        file_size = session["received_size"]
+        thumbnail_path = ""
+        duration = 0
+
+        if file_type == "image":
+            try:
+                image = Image.open(session["file_path"])
+                image.thumbnail((500, 500))
+                thumbnail_filename = f"thumb_{unique_file_name}"
+                thumbnail_path = os.path.join(upload_dir, thumbnail_filename)
+                image.save(thumbnail_path, format=image.format)
+            except Exception as e:
+                logging.error(f"生成缩略图失败: {e}")
+
+        elif file_type == "video":
+            try:
+                reader = imageio.get_reader(session["file_path"])
+                frame = reader.get_data(0)
+                thumb_image = Image.fromarray(frame)
+                thumb_image.thumbnail((500, 500), Image.Resampling.LANCZOS)
+                thumbnail_filename = f"thumb_{unique_file_name}.jpg"
+                thumbnail_path = os.path.join(upload_dir, thumbnail_filename)
+                thumb_image.save(thumbnail_path, "JPEG")
+                duration = reader.get_length() / reader.get_meta_data()['fps']
+                reader.close()
+            except Exception as e:
+                logging.error(f"视频处理失败: {e}")
+
+        # 保存到数据库
+        conn = get_db_connection()
+        if not conn:
+            return {"type": "send_media", "status": "error", "message": "数据库连接失败", "request_id": request_id}
+        try:
+            with conn:
+                cursor = conn.cursor()
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute('''
+                    INSERT INTO messages (sender, receiver, message, write_time, attachment_type, attachment_path, original_file_name, thumbnail_path, file_size, duration)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (from_user, to_user, "", current_time, file_type, file_path, original_file_name, thumbnail_path,
+                      file_size, duration))
+                conn.commit()
+        except sqlite3.Error as e:
+            logging.error(f"保存媒体消息失败: {e}")
+            return {"type": "send_media", "status": "error", "message": "保存失败", "request_id": request_id}
+        finally:
+            conn.close()
+
+        # 推送给接收者
+        push_payload = {
+            "type": "new_media",
+            "status": "success",
+            "from": from_user,
+            "to": to_user,
+            "original_file_name": original_file_name,
+            "file_type": file_type,
+            "file_id": unique_file_name,
+            "write_time": current_time,
+            "file_size": file_size,
+            "duration": duration
+        }
+        if thumbnail_path:
+            push_payload["thumbnail_path"] = thumbnail_path
+
+        with clients_lock:
+            if to_user in clients:
+                send_response(clients[to_user], push_payload)
+
+        del upload_sessions[request_id]
+        return {"type": "send_media", "status": "success", "message": f"{file_type} 已发送给 {to_user}",
+                "request_id": request_id}
+
+    return {"type": "send_media", "status": "success", "message": "分块接收中", "request_id": request_id}
+
+
+def download_media(request: dict, client_sock: socket.socket) -> dict:
+    """处理附件下载请求，支持分块传输"""
+    file_id = request.get("file_id")
+    request_id = request.get("request_id")
+    file_path = os.path.join("user_data", "uploads", file_id)
+
+    if not os.path.exists(file_path):
+        return {"type": "download_media", "status": "error", "message": "文件不存在", "request_id": request_id}
+
+    file_size = os.path.getsize(file_path)
+    chunk_size = 1024 * 1024  # 1MB
+
+    with open(file_path, "rb") as f:
+        chunk = f.read(chunk_size)
+        encoded_data = base64.b64encode(chunk).decode('utf-8')
+        resp = {
+            "type": "download_media",
+            "status": "success",
+            "file_data": encoded_data,
+            "file_size": file_size,
+            "request_id": request_id
+        }
+        send_response(client_sock, resp)
+    return resp
+
 def get_chat_history_paginated(request: dict, client_sock: socket.socket) -> dict:
-    """处理分页获取聊天记录请求"""
+    """处理分页获取聊天记录请求，同时返回附件信息（如果存在）"""
     username = request.get("username")
     friend = request.get("friend")
     page = request.get("page", 1)
@@ -254,7 +415,8 @@ def get_chat_history_paginated(request: dict, client_sock: socket.socket) -> dic
         with conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT rowid, write_time, sender, receiver, message FROM messages
+                SELECT rowid, write_time, sender, receiver, message, attachment_type, attachment_path, original_file_name, thumbnail_path, file_size, duration 
+                FROM messages
                 WHERE (sender = ? AND receiver = ?) OR (sender = ? AND receiver = ?)
                 ORDER BY write_time DESC, rowid DESC
                 LIMIT ? OFFSET ?
@@ -265,13 +427,23 @@ def get_chat_history_paginated(request: dict, client_sock: socket.socket) -> dic
         rows = []
     finally:
         conn.close()
-    history = [{
-        "write_time": row[1],
-        "username": row[2],
-        "friend_username": row[3],
-        "message": row[4],
-        "verify": f"{row[2]}+{row[3]}+is_Vei"
-    } for row in rows]
+    history = []
+    for row in rows:
+        record = {
+            "write_time": row[1],
+            "username": row[2],
+            "friend_username": row[3],
+            "message": row[4],
+        }
+        if row[5]:
+            record["attachment_type"] = row[5]
+            # 仅返回随机文件名作为 file_id，而非完整路径
+            record["file_id"] = os.path.basename(row[6]) if row[6] else ""
+            record["original_file_name"] = row[7]
+            record["thumbnail_path"] = row[8]
+            record["file_size"] = row[9]
+            record["duration"] = row[10]
+        history.append(record)
     resp = {
         "type": "chat_history",
         "status": "success",
@@ -295,16 +467,19 @@ def add_friend(request: dict, client_sock: socket.socket) -> dict:
             # 检查好友是否存在
             cursor.execute("SELECT * FROM users WHERE username = ?", (friend,))
             if cursor.fetchone() is None:
-                return {"type": "add_friend", "status": "error", "message": f"用户 {friend} 不存在，无法添加", "request_id": request_id}
+                return {"type": "add_friend", "status": "error", "message": f"用户 {friend} 不存在，无法添加",
+                        "request_id": request_id}
             # 检查好友关系是否已存在
             cursor.execute("SELECT * FROM friends WHERE username = ? AND friend = ?", (username, friend))
             if cursor.fetchone():
-                return {"type": "add_friend", "status": "fail", "message": f"{friend} 已是您的好友", "request_id": request_id}
+                return {"type": "add_friend", "status": "fail", "message": f"{friend} 已是您的好友",
+                        "request_id": request_id}
             # 添加双向好友关系
             cursor.execute('INSERT INTO friends (username, friend) VALUES (?, ?)', (username, friend))
             cursor.execute('INSERT INTO friends (username, friend) VALUES (?, ?)', (friend, username))
             conn.commit()
-            response = {"type": "add_friend", "status": "success", "message": f"{friend} 已添加为您的好友", "request_id": request_id}
+            response = {"type": "add_friend", "status": "success", "message": f"{friend} 已添加为您的好友",
+                        "request_id": request_id}
     except sqlite3.Error as e:
         logging.error(f"添加好友失败: {e}")
         response = {"type": "add_friend", "status": "error", "message": "添加好友失败", "request_id": request_id}
@@ -348,18 +523,25 @@ def handle_client(client_sock: socket.socket, client_addr):
                 continue
             elif req_type == "send_message":
                 response = send_message(request, client_sock)
+            elif req_type == "send_media":
+                response = send_media(request, client_sock)
+            elif req_type == "download_media":
+                download_media(request, client_sock)
+                continue
             elif req_type == "get_chat_history_paginated":
                 get_chat_history_paginated(request, client_sock)
                 continue
             elif req_type == "add_friend":
                 response = add_friend(request, client_sock)
             elif req_type == "exit":
-                response = {"type": "exit", "status": "success", "message": f"{request.get('username')} has exited", "request_id": request.get("request_id")}
+                response = {"type": "exit", "status": "success", "message": f"{request.get('username')} has exited",
+                            "request_id": request.get("request_id")}
                 send_response(client_sock, response)
                 logging.info(f"客户端 {client_addr} 请求退出")
                 break
             else:
-                response = {"status": "error", "message": "Unknown request type", "request_id": request.get("request_id")}
+                response = {"status": "error", "message": "Unknown request type",
+                            "request_id": request.get("request_id")}
 
             if response:
                 send_response(client_sock, response)
