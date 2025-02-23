@@ -6,6 +6,7 @@ import json
 import time
 import uuid
 import asyncio
+import base64
 from cryptography.fernet import Fernet
 
 def load_encryption_key():
@@ -21,12 +22,11 @@ def load_encryption_key():
     except Exception as e:
         raise ValueError("未能加载加密密钥。请设置 ENCRYPTION_KEY 环境变量或创建 secret.key 文件。") from e
 
-
 ENCRYPTION_KEY = load_encryption_key()
 fernet = Fernet(ENCRYPTION_KEY)
 
 class ChatClient:
-    def __init__(self, host='26.102.137.22', port=10026):
+    def __init__(self, host='26.102.137.22', port=13746):
         self.config = {
             'host': host,
             'port': port,
@@ -35,6 +35,9 @@ class ChatClient:
         }
         self.friends = []  # 保存好友列表
         self._init_connection()
+        # 新增新媒体消息回调属性
+        self.on_new_media_callback = None
+        self.on_progress_callback = None  # 新增进度回调属性
 
     def _init_connection(self):
         self.is_authenticated = False
@@ -126,9 +129,9 @@ class ChatClient:
                 encrypted_payload = await self._recv_async(length)
                 try:
                     resp = self._decrypt(encrypted_payload)
-                    print("Decrypted data:", resp)
+                    print("解密数据:", resp)
                 except Exception as decode_err:
-                    print(f"Background read task exception: {decode_err}")
+                    print(f"后台读取任务解密异常: {decode_err}")
                     continue
 
                 req_id = resp.get("request_id")
@@ -136,15 +139,46 @@ class ChatClient:
                     self.pending_requests.pop(req_id).set_result(resp)
                 elif resp.get("type") == "new_message" and self.on_new_message_callback:
                     asyncio.create_task(self.on_new_message_callback(resp))
+                elif resp.get("type") == "new_media" and self.on_new_media_callback:
+                    asyncio.create_task(self.on_new_media_callback(resp))
                 elif resp.get("type") == "friend_list_update":
                     self.friends = resp.get("friends", [])
                     if self.on_friend_list_update_callback:
                         await self.on_friend_list_update_callback(self.friends)
                 else:
-                    print("Unmatched response:", resp)
+                    print("未匹配的响应:", resp)
             except Exception as e:
-                print("Background read task exception:", e)
+                print("后台读取任务异常:", e)
                 await asyncio.sleep(1)
+
+    def set_progress_callback(self, callback):
+        """设置进度回调函数"""
+        self.on_progress_callback = callback
+
+    async def _send_file_chunks(self, req: dict, file_path: str, chunk_size=1024 * 1024) -> dict:
+        """辅助方法：分块发送文件并更新进度"""
+        file_size = os.path.getsize(file_path)
+        total_sent = 0
+
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                chunk_b64 = base64.b64encode(chunk).decode('utf-8')
+                chunk_req = req.copy()
+                chunk_req["file_data"] = chunk_b64
+                chunk_req["total_size"] = file_size
+                chunk_req["sent_size"] = total_sent + len(chunk)
+
+                await self.send_request(chunk_req)
+                total_sent += len(chunk)
+
+                if self.on_progress_callback:
+                    progress = (total_sent / file_size) * 100
+                    await self.on_progress_callback("upload", progress, os.path.basename(file_path))
+
+        return {"status": "success"}
 
     async def send_request(self, req: dict) -> dict:
         try:
@@ -171,15 +205,85 @@ class ChatClient:
         resp = await self.send_request(req)
         return await self.parse_response(resp)
 
-    async def send_message(self, from_user: str, to_user: str, message: str) -> dict:
+    async def send_message(self, to_user: str, message: str) -> dict:
         req = {
             "type": "send_message",
-            "from": from_user,
+            "from": self.username,
             "to": to_user,
             "message": message,
             "request_id": str(uuid.uuid4())
         }
         return await self.send_request(req)
+
+    async def send_media(self, to_user: str, file_path: str, file_type: str) -> dict:
+        """发送媒体消息，支持进度更新"""
+        try:
+            original_file_name = os.path.basename(file_path)
+            req = {
+                "type": "send_media",
+                "from": self.username,
+                "to": to_user,
+                "file_name": original_file_name,
+                "file_type": file_type,
+                "request_id": str(uuid.uuid4())
+            }
+
+            # 分块发送文件
+            await self._send_file_chunks(req, file_path)
+
+            # 发送完成信号（如果服务端需要）
+            final_req = req.copy()
+            final_req["file_data"] = ""  # 表示传输完成
+            return await self.send_request(final_req)
+
+        except Exception as e:
+            print("发送媒体文件异常:", e)
+            return {"status": "error", "message": str(e)}
+
+    async def _receive_file_chunks(self, file_id: str, save_path: str, file_size: int) -> dict:
+        """辅助方法：分块接收文件并更新进度"""
+        total_received = 0
+
+        with open(save_path, "wb") as f:
+            while total_received < file_size:
+                chunk_req = {
+                    "type": "download_media",
+                    "file_id": file_id,
+                    "request_id": str(uuid.uuid4())
+                }
+                resp = await self.send_request(chunk_req)
+
+                if resp.get("status") != "success":
+                    return resp
+
+                chunk_data = base64.b64decode(resp["file_data"])
+                f.write(chunk_data)
+                total_received += len(chunk_data)
+
+                if self.on_progress_callback:
+                    progress = (total_received / file_size) * 100
+                    await self.on_progress_callback("download", progress, os.path.basename(save_path))
+
+        return {"status": "success", "message": "下载成功", "save_path": save_path}
+
+    async def download_media(self, file_id: str, save_path: str) -> dict:
+        """下载媒体文件，支持进度更新"""
+        # 先获取文件大小
+        init_req = {
+            "type": "download_media",
+            "file_id": file_id,
+            "request_id": str(uuid.uuid4())
+        }
+        init_resp = await self.send_request(init_req)
+
+        if init_resp.get("status") != "success":
+            return init_resp
+
+        file_size = init_resp.get("file_size", 0)
+        if not file_size:
+            return await self._receive_file_chunks(file_id, save_path, file_size)
+
+        return await self._receive_file_chunks(file_id, save_path, file_size)
 
     async def add_friend(self, friend_username: str) -> str:
         req = {
@@ -192,21 +296,29 @@ class ChatClient:
         return resp.get("message", "")
 
     async def parse_response(self, resp: dict) -> dict:
+        """
+        解析聊天记录响应，若存在媒体消息，则返回相关扩展字段：
+          attachment_type, file_id, original_file_name, thumbnail_path, file_size, duration
+        """
         history = resp.get("chat_history", [])
         parsed, errors = [], []
         for entry in history:
             try:
-                wt = entry.get("write_time")
-                sender = entry.get("username")
-                msg = entry.get("message")
-                if not (wt and sender and msg):
-                    raise ValueError("缺少字段")
-                parsed.append({
-                    "write_time": wt,
-                    "sender_username": sender,
-                    "message": msg,
-                    "is_current_user": (sender == self.username)
-                })
+                parsed_entry = {
+                    "write_time": entry.get("write_time"),
+                    "sender_username": entry.get("username"),
+                    "message": entry.get("message"),
+                    "is_current_user": (entry.get("username") == self.username)
+                }
+                # 如果有媒体消息扩展字段，则解析
+                if "attachment_type" in entry:
+                    parsed_entry["attachment_type"] = entry.get("attachment_type")
+                    parsed_entry["file_id"] = entry.get("file_id")
+                    parsed_entry["original_file_name"] = entry.get("original_file_name")
+                    parsed_entry["thumbnail_path"] = entry.get("thumbnail_path")
+                    parsed_entry["file_size"] = entry.get("file_size")
+                    parsed_entry["duration"] = entry.get("duration")
+                parsed.append(parsed_entry)
             except Exception as ex:
                 errors.append({"entry": entry, "error": str(ex)})
         res = {"type": "chat_history", "data": parsed, "request_id": resp.get("request_id")}
