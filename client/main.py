@@ -319,7 +319,6 @@ class ChatWindow(QWidget):
             viewport = self.chat_components['scroll'].viewport()
             self.image_viewer.setGeometry(viewport.geometry())  # 确保调整时更新大小
         super().resizeEvent(event)
-        print(f"ChatWindow resized to {self.size()}")
 
     def _update_friend_list_width(self) -> None:
         width = 75 if self.width() <= 500 else 180
@@ -388,8 +387,6 @@ class ChatWindow(QWidget):
         """显示图片查看器并加载指定图片"""
         if not self.image_viewer or not self.chat_components.get('scroll'):
             return
-        print(f"Viewport size: {self.chat_components['scroll'].viewport().size()}")
-
         current_index = next((i for i, (fid, _) in enumerate(self.image_list) if fid == file_id), 0)
         self.image_viewer.set_image_list(self.image_list, current_index)
 
@@ -406,7 +403,6 @@ class ChatWindow(QWidget):
 
         self.image_viewer.show()
         self.image_viewer.raise_()
-        print(f"ImageViewer shown with size: {self.image_viewer.size()}")
 
     def _reset_chat_area(self) -> None:
         self.clear_chat_area()
@@ -486,7 +482,6 @@ class ChatWindow(QWidget):
         self.chat_components['chat'].addBubble(bubble)
         if message_type == 'image' and file_id:
             self.image_list.append((file_id, original_file_name or f"image_{file_id}"))
-            print(f"Added to image_list: {file_id}, {original_file_name}")  # 调试输出
         if is_current or self.should_scroll_to_bottom():
             self.adjust_scroll()
 
@@ -568,7 +563,6 @@ class ChatWindow(QWidget):
                 # 如果是图片，添加到 image_list
                 if self.client._detect_file_type(file_path) == "image" and bubble.file_id:
                     self.image_list.insert(0,(bubble.file_id, os.path.basename(file_path) or f"image_{bubble.file_id}"))
-                    print(f"Added sent image to image_list: {bubble.file_id}, {os.path.basename(file_path)}")  # 调试输出
             else:
                 bubble.complete_progress()
                 QMessageBox.critical(self, "错误", f"发送失败: {res.get('message')}")
@@ -598,7 +592,6 @@ class ChatWindow(QWidget):
         # 如果是图片消息，添加到 image_list
         if msg_type == "new_media" and file_type == "image" and file_id:
             self.image_list.insert(0, (file_id, original_file_name or f"image_{file_id}"))
-            print(f"Added received image to image_list: {file_id}, {original_file_name}")  # 调试输出
 
         if sender == self.client.current_friend:
             if not self.chat_components.get('chat'):
@@ -606,8 +599,7 @@ class ChatWindow(QWidget):
             bubble_type = file_type if msg_type == "new_media" else "text"
             bubble = ChatBubbleWidget(
                 msg, format_time(wt), "left", False, bubble_type,
-                file_id, original_file_name, thumbnail_path, file_size_str, duration
-            )
+                file_id, original_file_name, thumbnail_path, file_size_str, duration)
             self.chat_components['chat'].addBubble(bubble)  # 单独添加
             if self.should_scroll_to_bottom():
                 self.adjust_scroll()
