@@ -7,15 +7,15 @@ import time
 import uuid
 import asyncio
 import base64
+from typing import List
+
 from cryptography.fernet import Fernet
 
 def load_encryption_key():
     key = os.getenv("ENCRYPTION_KEY")
     if key:
-        print("从环境变量中加载到密钥:", key)  # 调试用，运行时可去掉
         return key.encode('utf-8')
     key_file = os.path.join(os.path.dirname(__file__), "secret.key")
-    print("环境变量中没有找到密钥，尝试从文件加载:", key_file)
     try:
         with open(key_file, "rb") as f:
             return f.read()
@@ -37,7 +37,6 @@ class ChatClient:
         self._init_connection()
         # 新增新媒体消息回调属性
         self.on_new_media_callback = None
-        self.on_progress_callback = None  # 新增进度回调属性
 
     def _init_connection(self):
         self.is_authenticated = False
@@ -54,12 +53,9 @@ class ChatClient:
             try:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.client_socket.connect((self.config['host'], self.config['port']))
-                print(f"成功连接到服务器 {self.config['host']}:{self.config['port']}")
                 return
             except socket.error as e:
-                print(f"连接失败: {e}")
                 time.sleep(self.config['delay'])
-        print("超过最大重试次数，连接失败。")
 
     def _pack_message(self, data: bytes) -> bytes:
         """为待发送数据添加4字节的长度头"""
@@ -85,7 +81,6 @@ class ChatClient:
             encrypted_response = self._recv_all(length)
             return self._decrypt(encrypted_response)
         except Exception as e:
-            print(f"发送/接收异常: {e}")
             return {"status": "error", "message": str(e)}
 
     def _recv_all(self, length: int) -> bytes:
@@ -127,13 +122,7 @@ class ChatClient:
                     continue
                 length = int.from_bytes(header, 'big')
                 encrypted_payload = await self._recv_async(length)
-                try:
-                    resp = self._decrypt(encrypted_payload)
-                    print("解密数据:", resp)
-                except Exception as decode_err:
-                    print(f"后台读取任务解密异常: {decode_err}")
-                    continue
-
+                resp = self._decrypt(encrypted_payload)
                 req_id = resp.get("request_id")
                 if req_id in self.pending_requests:
                     self.pending_requests.pop(req_id).set_result(resp)
@@ -145,17 +134,10 @@ class ChatClient:
                     self.friends = resp.get("friends", [])
                     if self.on_friend_list_update_callback:
                         await self.on_friend_list_update_callback(self.friends)
-                else:
-                    print("未匹配的响应:", resp)
             except Exception as e:
-                print("后台读取任务异常:", e)
                 await asyncio.sleep(1)
 
-    def set_progress_callback(self, callback):
-        """设置进度回调函数"""
-        self.on_progress_callback = callback
-
-    async def _send_file_chunks(self, req: dict, file_path: str, chunk_size=1024 * 1024) -> dict:
+    async def _send_file_chunks(self, req: dict, file_path: str, progress_callback=None, chunk_size=1024 * 1024) -> dict:
         """辅助方法：分块发送文件并更新进度"""
         file_size = os.path.getsize(file_path)
         total_sent = 0
@@ -174,9 +156,9 @@ class ChatClient:
                 await self.send_request(chunk_req)
                 total_sent += len(chunk)
 
-                if self.on_progress_callback:
+                if progress_callback:
                     progress = (total_sent / file_size) * 100
-                    await self.on_progress_callback("upload", progress, os.path.basename(file_path))
+                    await progress_callback("upload", progress, os.path.basename(file_path))
 
         return {"status": "success"}
 
@@ -190,7 +172,6 @@ class ChatClient:
             self.pending_requests[req.get("request_id")] = fut
             return await fut
         except Exception as e:
-            print("发送请求异常:", e)
             return None
 
     async def get_chat_history_paginated(self, friend: str, page: int, page_size: int) -> dict:
@@ -215,8 +196,8 @@ class ChatClient:
         }
         return await self.send_request(req)
 
-    async def send_media(self, to_user: str, file_path: str, file_type: str) -> dict:
-        """发送媒体消息，支持进度更新"""
+    async def send_media(self, to_user: str, file_path: str, file_type: str, progress_callback=None) -> dict:
+        """发送单个媒体消息，支持进度更新"""
         try:
             original_file_name = os.path.basename(file_path)
             req = {
@@ -227,18 +208,36 @@ class ChatClient:
                 "file_type": file_type,
                 "request_id": str(uuid.uuid4())
             }
-
-            # 分块发送文件
-            await self._send_file_chunks(req, file_path)
-
-            # 发送完成信号（如果服务端需要）
+            # 使用 _send_file_chunks 方法分块发送文件
+            await self._send_file_chunks(req, file_path, progress_callback)
             final_req = req.copy()
-            final_req["file_data"] = ""  # 表示传输完成
+            final_req["file_data"] = ""  # 结束标志
             return await self.send_request(final_req)
-
         except Exception as e:
-            print("发送媒体文件异常:", e)
             return {"status": "error", "message": str(e)}
+
+    async def send_multiple_media(self, to_user: str, file_paths: List[str], progress_callback=None) -> List[dict]:
+        """并发发送多个媒体文件"""
+        tasks = []
+        for file_path in file_paths:
+            file_type = self._detect_file_type(file_path)
+            task = asyncio.create_task(self.send_media(to_user, file_path, file_type, progress_callback))
+            tasks.append(task)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return [result if not isinstance(result, Exception) else {"status": "error", "message": str(result)} for result
+                in results]
+
+    def _detect_file_type(self, file_path: str) -> str:
+        """检测文件类型"""
+        image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.ico'}
+        video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'}
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in image_extensions:
+            return 'image'
+        elif ext in video_extensions:
+            return 'video'
+        else:
+            return 'file'
 
     async def _receive_file_chunks(self, file_id: str, save_path: str, file_size: int) -> dict:
         """辅助方法：分块接收文件并更新进度"""
@@ -266,24 +265,44 @@ class ChatClient:
 
         return {"status": "success", "message": "下载成功", "save_path": save_path}
 
-    async def download_media(self, file_id: str, save_path: str) -> dict:
-        """下载媒体文件，支持进度更新"""
-        # 先获取文件大小
-        init_req = {
-            "type": "download_media",
-            "file_id": file_id,
-            "request_id": str(uuid.uuid4())
-        }
-        init_resp = await self.send_request(init_req)
+    async def download_media(self, file_id: str, save_path: str, progress_callback=None) -> dict:
+        """下载媒体文件，支持分块传输"""
+        total_size = 0
+        received_size = 0
+        offset = 0
 
-        if init_resp.get("status") != "success":
-            return init_resp
+        with open(save_path, "wb") as f:
+            while True:
+                req = {
+                    "type": "download_media",
+                    "file_id": file_id,
+                    "offset": offset,
+                    "request_id": str(uuid.uuid4())
+                }
+                resp = await self.send_request(req)
 
-        file_size = init_resp.get("file_size", 0)
-        if not file_size:
-            return await self._receive_file_chunks(file_id, save_path, file_size)
+                if resp.get("status") != "success":
+                    return resp
 
-        return await self._receive_file_chunks(file_id, save_path, file_size)
+                if not total_size:
+                    total_size = resp.get("file_size", 0)
+                    if not total_size:
+                        return {"status": "error", "message": "文件大小未知"}
+
+                file_data_b64 = resp.get("file_data", "")
+                if file_data_b64:
+                    file_data = base64.b64decode(file_data_b64)
+                    f.write(file_data)
+                    received_size += len(file_data)
+                    offset += len(file_data)
+                    if progress_callback:
+                        progress = (received_size / total_size) * 100
+                        await progress_callback("download", progress, os.path.basename(save_path))
+
+                if resp.get("is_complete", False) or received_size >= total_size:
+                    break
+
+        return {"status": "success", "message": "下载成功", "save_path": save_path}
 
     async def add_friend(self, friend_username: str) -> str:
         req = {
@@ -335,9 +354,8 @@ class ChatClient:
             }
             await self.send_request(req)
         except Exception as e:
-            print("发送退出请求异常:", e)
+            return
         try:
             self.client_socket.close()
-            print("连接已关闭")
         except Exception as e:
-            print("关闭 socket 异常:", e)
+            return
