@@ -18,10 +18,9 @@ from qasync import QEventLoop
 from chat_client import ChatClient
 from Interface_Controls import (
     MessageInput, FriendItemWidget, ChatAreaWidget, ChatBubbleWidget,
-    style_button, style_line_edit, style_list_widget, style_scrollbar,
-    OnLine, style_rounded_button, style_text_edit, theme_manager, style_label,
-    circle_button_style, get_scrollbar_style, generate_thumbnail
-)
+    OnLine, theme_manager, StyleGenerator, generate_thumbnail)
+from client.Viewer import ImageViewer
+
 
 # 用于闪烁任务栏图标
 class FLASHWINFO(ctypes.Structure):
@@ -53,9 +52,9 @@ def create_themed_message_box(parent: QWidget, title: str, text: str) -> QMessag
     msg_box.setStyleSheet(f"QLabel {{ color: {theme.get('TEXT_COLOR', '#ffffff')}; }}")
     ok_button = msg_box.addButton("确认", QMessageBox.AcceptRole)
     ok_button.setFixedSize(50, 25)
-    style_rounded_button(ok_button)
+    StyleGenerator.apply_style(ok_button, "button", extra="border-radius: 4px;")
     for label in msg_box.findChildren(QLabel):
-        style_label(label)
+        StyleGenerator.apply_style(label, "label")
     return msg_box
 
 def create_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode) -> QLineEdit:
@@ -63,7 +62,7 @@ def create_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode
     le.setPlaceholderText(placeholder)
     le.setMinimumHeight(30)
     le.setEchoMode(echo)
-    style_line_edit(le)
+    StyleGenerator.apply_style(le, "line_edit")
     regex = QRegularExpression(r'^[a-zA-Z0-9!@#$%^&*()_+={}\[\]:;"\'<>,.?/\\|`~\-]*$')
     le.setValidator(QRegularExpressionValidator(regex, le))
     return le
@@ -89,7 +88,7 @@ class LoginWindow(QDialog):
         self.password_input = create_line_edit(self, "请输入密码", QLineEdit.Password)
         self.login_button = QPushButton("登录", self)
         self.login_button.setMinimumHeight(30)
-        style_rounded_button(self.login_button)
+        StyleGenerator.apply_style(self.login_button, "button", extra="border-radius: 4px;")
         self.login_button.clicked.connect(self.on_login)
 
         layout.addWidget(self.username_input, 0, 1)
@@ -115,7 +114,7 @@ class LoginWindow(QDialog):
             if not self.main_app.chat_window:
                 self.main_app.chat_window = ChatWindow(self.chat_client, self.main_app)
             self.chat_client.on_new_message_callback = self.main_app.chat_window.handle_new_message
-            self.chat_client.on_new_media_callback = self.main_app.chat_window.handle_new_media
+            self.chat_client.on_new_media_callback = self.main_app.chat_window.handle_new_message
             self.chat_client.on_friend_list_update_callback = self.main_app.chat_window.update_friend_list
             self.main_app.chat_window.show()
         else:
@@ -139,16 +138,16 @@ class AddFriendDialog(QDialog):
         self.input = QLineEdit(self)
         self.input.setPlaceholderText("好友用户名")
         self.input.setFixedHeight(30)
-        style_line_edit(self.input)
+        StyleGenerator.apply_style(self.input, "line_edit")
 
         btn_layout = QHBoxLayout()
         self.cancel_btn = QPushButton("取消", self)
         self.cancel_btn.setFixedHeight(30)
-        style_rounded_button(self.cancel_btn)
+        StyleGenerator.apply_style(self.cancel_btn, "button", extra="border-radius: 4px;")
         self.cancel_btn.clicked.connect(self.reject)
         self.confirm_btn = QPushButton("确认", self)
         self.confirm_btn.setFixedHeight(30)
-        style_rounded_button(self.confirm_btn)
+        StyleGenerator.apply_style(self.confirm_btn, "button", extra="border-radius: 4px;")
         self.confirm_btn.setEnabled(False)
         self.confirm_btn.clicked.connect(self.accept)
 
@@ -162,8 +161,8 @@ class AddFriendDialog(QDialog):
         self.update_theme(theme_manager.current_theme)
 
     def update_theme(self, theme: dict) -> None:
-        style_label(self.label)
-        style_line_edit(self.input)
+        StyleGenerator.apply_style(self.label, "label")
+        StyleGenerator.apply_style(self.input, "text_edit")
 
 # 聊天窗口
 class ChatWindow(QWidget):
@@ -186,6 +185,8 @@ class ChatWindow(QWidget):
         self._setup_ui()
         theme_manager.register(self)
         self.active_bubbles = {}
+        self.image_viewer = None
+        self.image_list = []
 
     def _setup_window(self) -> None:
         self.setWindowTitle(f"ChatINL 用户: {self.client.username}")
@@ -223,7 +224,7 @@ class ChatWindow(QWidget):
         for icon, mode in (("Day_Icon.ico", "light"), ("Night_Icon.ico", "dark")):
             btn = QPushButton(self)
             btn.setFixedHeight(30)
-            style_rounded_button(btn)
+            StyleGenerator.apply_style(btn, "button", extra="border-radius: 4px;")
             btn.setIcon(QIcon(resource_path(icon)))
             btn.setIconSize(QSize(15, 15))
             btn.clicked.connect(lambda _, m=mode: self.set_mode(m))
@@ -238,11 +239,11 @@ class ChatWindow(QWidget):
         top_layout = QHBoxLayout()
         self.mode_switch_button = QPushButton("<", panel)
         self.mode_switch_button.setFixedSize(20, 40)
-        style_button(self.mode_switch_button)
+        StyleGenerator.apply_style(self.mode_switch_button, "button")
         self.mode_switch_button.clicked.connect(self.toggle_theme_panel)
         self.add_button = QPushButton(panel)
         self.add_button.setFixedHeight(40)
-        style_button(self.add_button)
+        StyleGenerator.apply_style(self.add_button, "button")
         self.add_button.setIcon(QIcon(resource_path("Add_Icon.ico")))
         self.add_button.setIconSize(QSize(25, 25))
         self.add_button.clicked.connect(lambda: run_async(self.async_show_add_friend()))
@@ -254,8 +255,8 @@ class ChatWindow(QWidget):
         self.friend_list = QListWidget(panel)
         self.friend_list.setSelectionMode(QListWidget.SingleSelection)
         self.friend_list.setFocusPolicy(Qt.StrongFocus)
-        style_list_widget(self.friend_list)
-        self.friend_list.verticalScrollBar().setStyleSheet(get_scrollbar_style())
+        StyleGenerator.apply_style(self.friend_list, "list_widget")
+        self.friend_list.verticalScrollBar().setStyleSheet(StyleGenerator._BASE_STYLES["scrollbar"].format(**theme_manager.current_theme))
         self.friend_list.itemClicked.connect(lambda item: run_async(self.select_friend(item)))
 
         layout.addLayout(top_layout)
@@ -286,30 +287,39 @@ class ChatWindow(QWidget):
 
     def update_theme(self, theme: dict) -> None:
         self.setStyleSheet(f"background-color: {theme['MAIN_INTERFACE']};")
-        style_list_widget(self.friend_list)
-        self.friend_list.verticalScrollBar().setStyleSheet(get_scrollbar_style())
-
+        if hasattr(self, "friend_list"):
+            StyleGenerator.apply_style(self.friend_list, "list_widget")
+        self.friend_list.verticalScrollBar().setStyleSheet(StyleGenerator._BASE_STYLES["scrollbar"].format(**theme_manager.current_theme))
         if (scroll := self.chat_components.get('scroll')):
             scroll.viewport().setStyleSheet(f"background-color: {theme['chat_bg']};")
-            style_scrollbar(scroll)
+            StyleGenerator.apply_style(scroll, "scrollbar")
         if (chat := self.chat_components.get('chat')):
             chat.setStyleSheet(f"background-color: {theme['chat_bg']};")
         if (input_widget := self.chat_components.get('input')):
-            style_text_edit(input_widget.text_edit)
+            StyleGenerator.apply_style(input_widget.text_edit, "text_edit")
         if (send_btn := self.chat_components.get('send_button')):
-            style_button(send_btn)
+            StyleGenerator.apply_style(send_btn, "button")
         if (online := self.chat_components.get('online')):
             online.update_theme(theme)
         if self.add_friend_dialog and self.add_friend_dialog.isVisible():
             self.add_friend_dialog.update_theme(theme)
         if self.scroll_to_bottom_btn:
-            circle_button_style(self.scroll_to_bottom_btn)
+            StyleGenerator.apply_style(self.scroll_to_bottom_btn, "button", extra="border-radius: 15px;")
+        if self.image_viewer:
+            self.image_viewer.setStyleSheet(f"background-color: rgba(0, 0, 0, 220);")
+            StyleGenerator.apply_style(self.image_viewer.prev_button, "button", extra="border-radius: 25px;")
+            StyleGenerator.apply_style(self.image_viewer.next_button, "button", extra="border-radius: 25px;")
+            StyleGenerator.apply_style(self.image_viewer.close_button, "button", extra="border-radius: 15px;")
 
     def resizeEvent(self, event) -> None:
         self._update_friend_list_width()
         if self.scroll_to_bottom_btn:
             self._position_scroll_button()
+        if self.image_viewer and self.image_viewer.isVisible() and self.chat_components.get('scroll'):
+            viewport = self.chat_components['scroll'].viewport()
+            self.image_viewer.setGeometry(viewport.geometry())  # 确保调整时更新大小
         super().resizeEvent(event)
+        print(f"ChatWindow resized to {self.size()}")
 
     def _update_friend_list_width(self) -> None:
         width = 75 if self.width() <= 500 else 180
@@ -328,47 +338,40 @@ class ChatWindow(QWidget):
 
     def setup_chat_area(self) -> None:
         self.default_label.hide()
-        area_widget = QWidget(self)
-        area_layout = QVBoxLayout(area_widget)
+        if self.chat_components.get('chat'):  # 如果已存在聊天区域，先清理
+            self.clear_chat_area()
+        self.chat_components['area_widget'] = QWidget(self)
+        area_layout = QVBoxLayout(self.chat_components['area_widget'])
         area_layout.setContentsMargins(0, 0, 0, 0)
         area_layout.setSpacing(0)
-
-        online = OnLine(self)
-        online.setStyleSheet("border: none; background-color: #ffffff;")
-        online.setFixedHeight(50)
-
-        chat = ChatAreaWidget(self)
-        chat.setStyleSheet("background-color: #e9e9e9;")
-
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(chat)
-        scroll.viewport().setStyleSheet("background-color: #e9e9e9; border: none;")
-        style_scrollbar(scroll)
-        scroll.verticalScrollBar().valueChanged.connect(self.on_scroll_changed)
-
+        self.chat_components['online'] = OnLine(self)
+        self.chat_components['online'].setStyleSheet("border: none; background-color: #ffffff;")
+        self.chat_components['online'].setFixedHeight(50)
+        self.chat_components['chat'] = ChatAreaWidget(self)
+        self.chat_components['chat'].setStyleSheet(f"background-color: #e9e9e9;")
+        self.chat_components['scroll'] = QScrollArea(self)
+        self.chat_components['scroll'].setWidgetResizable(True)
+        self.chat_components['scroll'].setFrameShape(QFrame.NoFrame)
+        self.chat_components['scroll'].setWidget(self.chat_components['chat'])
+        self.chat_components['scroll'].viewport().setStyleSheet("background-color: #e9e9e9; border: none;")
+        StyleGenerator.apply_style(self.chat_components['scroll'],"scrollbar")
+        sb = self.chat_components['scroll'].verticalScrollBar()
+        sb.valueChanged.connect(self.on_scroll_changed)
         self._create_scroll_button(theme_manager.current_theme)
-
-        input_widget = MessageInput(self)
-        input_widget.text_edit.setPlaceholderText("输入消息")
-
-        send_button = QPushButton("发送", self)
-        send_button.setFixedSize(110, 70)
-        style_button(send_button)
-        send_button.clicked.connect(lambda: run_async(self.send_message()))
-
-        area_layout.addWidget(online)
-        area_layout.addWidget(scroll)
-
-        self.content_layout.addWidget(area_widget, 0, 0, 1, 2)
-        self.content_layout.addWidget(input_widget, 1, 0)
-        self.content_layout.addWidget(send_button, 1, 1)
-
-        self.chat_components.update({
-            'area_widget': area_widget, 'scroll': scroll, 'input': input_widget,
-            'send_button': send_button, 'online': online, 'chat': chat
-        })
+        area_layout.addWidget(self.chat_components['online'])
+        area_layout.addWidget(self.chat_components['scroll'])
+        self.chat_components['input'] = MessageInput(self)
+        self.chat_components['input'].setFixedHeight(70)
+        self.chat_components['send_button'] = QPushButton("发送", self)
+        self.chat_components['send_button'].setFixedSize(110, 70)
+        StyleGenerator.apply_style(self.chat_components['send_button'],"button")
+        self.chat_components['send_button'].clicked.connect(lambda: asyncio.create_task(self.send_message()))
+        self.content_layout.addWidget(self.chat_components['area_widget'], 0, 0, 1, 2)
+        self.content_layout.addWidget(self.chat_components['input'], 1, 0)
+        self.content_layout.addWidget(self.chat_components['send_button'], 1, 1)
+        self.image_viewer = ImageViewer(self.chat_components['scroll'].viewport())
+        self.image_viewer.hide()  # 默认隐藏
+        theme_manager.register(self.image_viewer)
         self.update_theme(theme_manager.current_theme)
 
     def _create_scroll_button(self, theme: dict) -> None:
@@ -376,16 +379,43 @@ class ChatWindow(QWidget):
             self.scroll_to_bottom_btn = QPushButton(self.chat_components['scroll'].viewport())
             self.scroll_to_bottom_btn.setFixedSize(30, 30)
             self.scroll_to_bottom_btn.clicked.connect(self.on_scroll_button_clicked)
-            circle_button_style(self.scroll_to_bottom_btn)
+            StyleGenerator.apply_style(self.scroll_to_bottom_btn, "button", extra="border-radius: 15px;")
             self.scroll_to_bottom_btn.setIcon(QIcon(resource_path("arrow_down.ico")))
             self.scroll_to_bottom_btn.setIconSize(QSize(15, 15))
             self.scroll_to_bottom_btn.hide()
+
+    async def show_image_viewer(self, file_id: str, original_file_name: str) -> None:
+        """显示图片查看器并加载指定图片"""
+        if not self.image_viewer or not self.chat_components.get('scroll'):
+            return
+        print(f"Viewport size: {self.chat_components['scroll'].viewport().size()}")
+
+        current_index = next((i for i, (fid, _) in enumerate(self.image_list) if fid == file_id), 0)
+        self.image_viewer.set_image_list(self.image_list, current_index)
+
+        scroll = self.chat_components['scroll']
+        viewport = scroll.viewport()
+        # 调整 ImageViewer 大小以覆盖 viewport 区域，不改变父控件
+        self.image_viewer.setGeometry(viewport.geometry())
+        # 记录当前滚动条的位置和滚动区域引用
+        self.image_viewer._previous_scroll_value = scroll.verticalScrollBar().value()
+        self.image_viewer.scroll_area = scroll
+        # 禁用滚动条，避免用户操作底下内容
+        scroll.verticalScrollBar().setEnabled(False)
+        scroll.horizontalScrollBar().setEnabled(False)
+
+        self.image_viewer.show()
+        self.image_viewer.raise_()
+        print(f"ImageViewer shown with size: {self.image_viewer.size()}")
 
     def _reset_chat_area(self) -> None:
         self.clear_chat_area()
         self.setup_chat_area()
         self.current_page = 1
         self.has_more_history = True
+        if self.image_viewer:
+            self.image_viewer.hide()
+        self.image_list.clear()
 
     def on_scroll_button_clicked(self) -> None:
         self.adjust_scroll()
@@ -454,6 +484,9 @@ class ChatWindow(QWidget):
             message_type, file_id, original_file_name, thumbnail_path, file_size, duration
         )
         self.chat_components['chat'].addBubble(bubble)
+        if message_type == 'image' and file_id:
+            self.image_list.append((file_id, original_file_name or f"image_{file_id}"))
+            print(f"Added to image_list: {file_id}, {original_file_name}")  # 调试输出
         if is_current or self.should_scroll_to_bottom():
             self.adjust_scroll()
 
@@ -485,74 +518,106 @@ class ChatWindow(QWidget):
             return
         await self.client.send_message(self.client.current_friend, text)
         wt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        await self._handle_message(self.client.current_friend, text, True, wt, received=False)
-        self.chat_components['input'].text_edit.clear()
+        bubble = ChatBubbleWidget(
+            text, format_time(wt), "right", True, "text"
+        )
+        self.chat_components['chat'].addBubble(bubble)  # 单独添加
         self.adjust_scroll()
+        self.chat_components['input'].text_edit.clear()
 
     async def send_media(self, file_path: str, file_type: str) -> None:
+        """保留原有单文件上传逻辑，仅为兼容性保留"""
+        await self.send_multiple_media([file_path])
+
+    async def send_multiple_media(self, file_paths: List[str]) -> None:
         if not self.client.current_friend:
             return
-        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-        file_size_str = f"{file_size_mb:.2f} MB"
-        thumbnail_path = generate_thumbnail(file_path, file_type) if file_type in ('image', 'video') else None
 
-        # 创建带进度条的气泡
-        wt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        bubble = ChatBubbleWidget(
-            "", format_time(wt), "right", True, file_type, None,
-            os.path.basename(file_path), thumbnail_path, file_size_str, None
-        )
-        self.chat_components['chat'].addBubble(bubble)
+        # 为每个文件创建气泡
+        bubbles = {}
+        for file_path in file_paths:
+            file_type = self.client._detect_file_type(file_path)
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            file_size_str = f"{file_size_mb:.2f} MB"
+            thumbnail_path = generate_thumbnail(file_path, file_type) if file_type in ('image', 'video') else None
+
+            wt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            bubble = ChatBubbleWidget(
+                "", format_time(wt), "right", True, file_type, None,
+                os.path.basename(file_path), thumbnail_path, file_size_str, None
+            )
+            self.chat_components['chat'].addBubble(bubble)
+            bubbles[file_path] = bubble
         self.adjust_scroll()
 
-        # 设置上传进度回调
+        # 进度回调
         async def progress_callback(type_, progress, filename):
-            if type_ == "upload":
-                bubble.update_progress(progress)
+            file_path = next((fp for fp in bubbles if os.path.basename(fp) == filename), None)
+            if file_path and type_ == "upload":
+                bubbles[file_path].update_progress(progress)
                 QApplication.processEvents()
 
-        self.client.set_progress_callback(progress_callback)
-
-        # 发送媒体文件
-        res = await self.client.send_media(self.client.current_friend, file_path, file_type)
-        self.client.set_progress_callback(None)
-
-        if res.get("status") == "success":
-            bubble.complete_progress()
-            bubble.file_id = res.get("file_id")
-            bubble.duration = res.get("duration")
-        else:
-            bubble.complete_progress()
-            QMessageBox.critical(self, "错误", f"发送失败: {res.get('message')}")
+        # 并发上传
+        results = await self.client.send_multiple_media(self.client.current_friend, file_paths, progress_callback)
+        for file_path, res in zip(file_paths, results):
+            bubble = bubbles[file_path]
+            if res.get("status") == "success":
+                bubble.file_id = res.get("file_id")
+                bubble.duration = res.get("duration")
+                bubble.complete_progress()
+                # 如果是图片，添加到 image_list
+                if self.client._detect_file_type(file_path) == "image" and bubble.file_id:
+                    self.image_list.insert(0,(bubble.file_id, os.path.basename(file_path) or f"image_{bubble.file_id}"))
+                    print(f"Added sent image to image_list: {bubble.file_id}, {os.path.basename(file_path)}")  # 调试输出
+            else:
+                bubble.complete_progress()
+                QMessageBox.critical(self, "错误", f"发送失败: {res.get('message')}")
 
     async def handle_new_message(self, res: dict) -> None:
-        await self._handle_message(
-            res["from"], res["message"], False, res["write_time"], received=True
-        )
-
-    async def handle_new_media(self, res: dict) -> None:
-        file_id = res["file_id"]
-        file_type = res["file_type"]
-        original_file_name = res["original_file_name"]
-        thumbnail_path = res["thumbnail_path"]
-        file_size = res["file_size"]
-        duration = res["duration"]
+        sender = res["from"]
         wt = res["write_time"]
+        msg_type = res.get("type", "new_message")
 
-        bubble = ChatBubbleWidget(
-            "", format_time(wt), "left", False, file_type, file_id,
-            original_file_name, thumbnail_path, file_size, duration
-        )
-        self.chat_components['chat'].addBubble(bubble)
-        if self.should_scroll_to_bottom():
-            self.adjust_scroll()
-        await self._handle_message(
-            res["from"], "", False, wt, received=True,
-            message_type=file_type, file_id=file_id,
-            original_file_name=original_file_name,
-            thumbnail_path=thumbnail_path, file_size=file_size,
-            duration=duration
-        )
+        msg = res.get("message", "") if msg_type == "new_message" else ""
+        file_id = res.get("file_id")
+        file_type = res.get("file_type")
+        original_file_name = res.get("original_file_name")
+        thumbnail_path = res.get("thumbnail_path")
+        file_size = res.get("file_size")
+        duration = res.get("duration")
+        file_size_str = None
+        if file_size and isinstance(file_size, (int, float)):
+            file_size_mb = file_size / (1024 * 1024)
+            file_size_str = f"{file_size_mb:.2f} MB"
+        elif file_size:
+            file_size_str = file_size
+
+        self.last_message_times[sender] = wt
+        self.unread_messages[sender] = self.unread_messages.get(sender, 0) + 1
+
+        # 如果是图片消息，添加到 image_list
+        if msg_type == "new_media" and file_type == "image" and file_id:
+            self.image_list.insert(0, (file_id, original_file_name or f"image_{file_id}"))
+            print(f"Added received image to image_list: {file_id}, {original_file_name}")  # 调试输出
+
+        if sender == self.client.current_friend:
+            if not self.chat_components.get('chat'):
+                self.setup_chat_area()
+            bubble_type = file_type if msg_type == "new_media" else "text"
+            bubble = ChatBubbleWidget(
+                msg, format_time(wt), "left", False, bubble_type,
+                file_id, original_file_name, thumbnail_path, file_size_str, duration
+            )
+            self.chat_components['chat'].addBubble(bubble)  # 单独添加
+            if self.should_scroll_to_bottom():
+                self.adjust_scroll()
+                self.unread_messages[sender] = 0
+            else:
+                self._check_scroll_position()
+
+        notification_msg = msg if msg_type == "new_message" else f"收到新的{file_type}: {original_file_name or '未知文件'}"
+        self.show_notification(f"用户 {sender}:", notification_msg)
+        await self.update_friend_list()
 
     def _sort_friends(self, friends: List[dict]) -> List[dict]:
         online = sorted(
@@ -571,9 +636,10 @@ class ChatWindow(QWidget):
         self.friend_list.clear()
         for friend in self._sort_friends(friends):
             uname = friend["username"]
+            unread_count = self.unread_messages.get(uname, 0)
             item = QListWidgetItem(self.friend_list)
             item.setSizeHint(QSize(0, 40))
-            widget = FriendItemWidget(uname, friend.get("online", False), self.unread_messages.get(uname, 0))
+            widget = FriendItemWidget(uname, friend.get("online", False), unread_count)
             self.friend_list.setItemWidget(item, widget)
             theme_manager.register(widget)
             if uname == current_friend:
@@ -598,16 +664,24 @@ class ChatWindow(QWidget):
             self.client.current_friend, self.current_page, self.page_size
         )
         if res and res.get("type") == "chat_history" and (messages := res.get("data", [])):
-            bubbles = [
-                ChatBubbleWidget(
+            bubbles = []
+            for msg in messages:
+                file_size = msg.get("file_size", 0)
+                if isinstance(file_size, (int, float)):
+                    file_size_str = f"{file_size / (1024 * 1024):.2f} MB"
+                else:
+                    file_size_str = file_size
+                bubble = ChatBubbleWidget(
                     msg.get("message", ""), format_time(msg.get("write_time", "")),
                     "right" if msg.get("is_current_user") else "left", msg.get("is_current_user", False),
                     msg.get("attachment_type", "text"), msg.get("file_id"), msg.get("original_file_name"),
-                    msg.get("thumbnail_path"),
-                    f"{msg.get('file_size', 0) / (1024 * 1024):.2f} MB",  # 转换为MB并保留2位小数
-                    msg.get("duration")
-                ) for msg in messages
-            ]
+                    msg.get("thumbnail_path"), file_size_str, msg.get("duration")
+                )
+                bubbles.append(bubble)
+                # 如果是图片消息，添加到图片列表
+                if msg.get("attachment_type") == "image" and msg.get("file_id"):
+                    self.image_list.append(
+                        (msg.get("file_id"), msg.get("original_file_name") or f"image_{msg.get('file_id')}"))
             self.chat_components['chat'].addBubbles(bubbles)
 
             def update_and_scroll():
@@ -616,7 +690,6 @@ class ChatWindow(QWidget):
                 QApplication.processEvents()
                 if reset and sb:
                     sb.setValue(sb.maximum())
-                    # 再次判断，确保滚到底部
                     if sb.value() != sb.maximum():
                         sb.setValue(sb.maximum())
                 elif sb:
@@ -674,19 +747,25 @@ class ChatWindow(QWidget):
             self.add_friend_dialog.raise_()
             self.add_friend_dialog.activateWindow()
             return
-        self.add_friend_dialog = AddFriendDialog(self)
-        self.add_friend_dialog.confirm_btn.clicked.connect(lambda: run_async(self.proc_add_friend()))
+        dialog = AddFriendDialog(self)
+        self.add_friend_dialog = dialog
         fut = asyncio.get_running_loop().create_future()
-        self.add_friend_dialog.finished.connect(lambda _: fut.set_result(None))
-        self.add_friend_dialog.show()
+
+        def set_future_result(_):
+            if not fut.done():  # 仅在未完成时设置结果
+                fut.set_result(None)
+
+        dialog.finished.connect(set_future_result)
+        dialog.confirm_btn.clicked.connect(lambda: run_async(self.proc_add_friend(dialog)))
+        dialog.show()
         await fut
         self.add_friend_dialog = None
 
-    async def proc_add_friend(self) -> None:
-        if (friend_name := self.add_friend_dialog.input.text().strip()):
+    async def proc_add_friend(self, dialog: AddFriendDialog) -> None:
+        if friend_name := dialog.input.text().strip():
             res = await self.client.add_friend(friend_name)
             create_themed_message_box(self, "提示", res).exec_()
-            self.add_friend_dialog.accept()
+            dialog.accept()
 
     def closeEvent(self, event) -> None:
         event.ignore()
