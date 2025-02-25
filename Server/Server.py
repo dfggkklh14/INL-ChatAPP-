@@ -256,7 +256,7 @@ def send_message(request: dict, client_sock: socket.socket) -> dict:
 
 
 def send_media(request: dict, client_sock: socket.socket) -> dict:
-    """处理发送媒体消息，支持分块传输"""
+    """处理发送媒体消息，支持分块传输并按类型存储"""
     from_user = request.get("from")
     to_user = request.get("to")
     original_file_name = request.get("file_name")
@@ -266,20 +266,33 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
     total_size = request.get("total_size", 0)
     sent_size = request.get("sent_size", 0)
 
-    upload_dir = os.path.join("user_data", "uploads")
-    os.makedirs(upload_dir, exist_ok=True)
-    unique_file_name = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{original_file_name}"
-    file_path = os.path.join(upload_dir, unique_file_name)
+    # 根据文件类型选择存储目录
+    base_dir = "user_data"
+    if file_type == "file":
+        upload_dir = os.path.join(base_dir, "files")
+    elif file_type == "image":
+        upload_dir = os.path.join(base_dir, "images")
+    elif file_type == "video":
+        upload_dir = os.path.join(base_dir, "videos")
+    else:
+        upload_dir = os.path.join(base_dir, "uploads")
 
-    # 如果是第一个分块或完整文件
+    os.makedirs(upload_dir, exist_ok=True)
+
+    # 如果是第一个分块或完整文件，生成文件名并存储在会话中
     if request_id not in upload_sessions:
+        unique_file_name = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{original_file_name}"
+        file_path = os.path.join(upload_dir, unique_file_name)
         upload_sessions[request_id] = {
             "file_path": file_path,
             "total_size": total_size,
-            "received_size": 0
+            "received_size": 0,
+            "unique_file_name": unique_file_name  # 存储文件名以确保一致性
         }
 
     session = upload_sessions[request_id]
+    file_path = session["file_path"]  # 使用会话中的文件路径
+    unique_file_name = session["unique_file_name"]
 
     # 如果有数据，写入文件
     if file_data_b64:
@@ -288,6 +301,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
             with open(session["file_path"], "ab") as f:
                 f.write(file_data)
             session["received_size"] += len(file_data)
+            logging.debug(f"写入文件: path={session['file_path']}, size={len(file_data)}")
         except Exception as e:
             logging.error(f"文件写入失败: {e}")
             return {"type": "send_media", "status": "error", "message": "文件写入失败", "request_id": request_id}
@@ -297,19 +311,27 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
         thumbnail_path = ""
         duration = 0
 
+        # 验证文件是否存在
+        if not os.path.exists(file_path):
+            logging.error(f"文件未找到: {file_path}")
+            return {"type": "send_media", "status": "error", "message": "文件保存失败，路径未找到",
+                    "request_id": request_id}
+
+        # 为图片和视频生成缩略图
         if file_type == "image":
             try:
-                image = Image.open(session["file_path"])
+                image = Image.open(file_path)
                 image.thumbnail((500, 500))
                 thumbnail_filename = f"thumb_{unique_file_name}"
                 thumbnail_path = os.path.join(upload_dir, thumbnail_filename)
                 image.save(thumbnail_path, format=image.format)
+                logging.debug(f"生成图片缩略图: {thumbnail_path}")
             except Exception as e:
                 logging.error(f"生成缩略图失败: {e}")
 
         elif file_type == "video":
             try:
-                reader = imageio.get_reader(session["file_path"])
+                reader = imageio.get_reader(file_path)
                 frame = reader.get_data(0)
                 thumb_image = Image.fromarray(frame)
                 thumb_image.thumbnail((500, 500), Image.Resampling.LANCZOS)
@@ -318,6 +340,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 thumb_image.save(thumbnail_path, "JPEG")
                 duration = reader.get_length() / reader.get_meta_data()['fps']
                 reader.close()
+                logging.debug(f"生成视频缩略图: {thumbnail_path}")
             except Exception as e:
                 logging.error(f"视频处理失败: {e}")
 
@@ -329,11 +352,13 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
             with conn:
                 cursor = conn.cursor()
                 current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                logging.debug(f"保存媒体消息: attachment_path={file_path}, original_file_name={original_file_name}")
                 cursor.execute('''
-                    INSERT INTO messages (sender, receiver, message, write_time, attachment_type, attachment_path, original_file_name, thumbnail_path, file_size, duration)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (from_user, to_user, "", current_time, file_type, file_path, original_file_name, thumbnail_path,
-                      file_size, duration))
+                        INSERT INTO messages (sender, receiver, message, write_time, attachment_type, attachment_path, original_file_name, thumbnail_path, file_size, duration)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                from_user, to_user, "", current_time, file_type, file_path, original_file_name, thumbnail_path,
+                file_size, duration))
                 conn.commit()
         except sqlite3.Error as e:
             logging.error(f"保存媒体消息失败: {e}")
@@ -349,7 +374,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
             "to": to_user,
             "original_file_name": original_file_name,
             "file_type": file_type,
-            "file_id": unique_file_name,
+            "file_id": unique_file_name,  # 使用固定的 unique_file_name
             "write_time": current_time,
             "file_size": file_size,
             "duration": duration
@@ -362,36 +387,84 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 send_response(clients[to_user], push_payload)
 
         del upload_sessions[request_id]
-        return {"type": "send_media", "status": "success", "message": f"{file_type} 已发送给 {to_user}",
-                "request_id": request_id}
+        return {
+            "type": "send_media",
+            "status": "success",
+            "message": f"{file_type} 已发送给 {to_user}",
+            "request_id": request_id,
+            "file_id": unique_file_name,  # 确保一致
+            "write_time": current_time,
+            "duration": duration
+        }
 
     return {"type": "send_media", "status": "success", "message": "分块接收中", "request_id": request_id}
 
-
 def download_media(request: dict, client_sock: socket.socket) -> dict:
-    """处理附件下载请求，支持分块传输"""
     file_id = request.get("file_id")
     request_id = request.get("request_id")
-    file_path = os.path.join("user_data", "uploads", file_id)
+    offset = request.get("offset", 0)
 
-    if not os.path.exists(file_path):
-        return {"type": "download_media", "status": "error", "message": "文件不存在", "request_id": request_id}
+    conn = get_db_connection()
+    if not conn:
+        resp = {"type": "download_media", "status": "error", "message": "数据库连接失败", "request_id": request_id}
+        send_response(client_sock, resp)
+        return resp
 
+    try:
+        with conn:
+            cursor = conn.cursor()
+            # 使用精确匹配查询 attachment_path
+            cursor.execute("SELECT attachment_path FROM messages WHERE attachment_path LIKE ?", (f"%{file_id}",))
+            result = cursor.fetchone()
+            file_path = result[0] if result else None
+            logging.debug(f"查询文件: file_id={file_id}, attachment_path={file_path}")
+    except sqlite3.Error as e:
+        logging.error(f"查询文件路径失败: {e}")
+        file_path = None
+    finally:
+        conn.close()
+
+    if not file_path or not os.path.exists(file_path):
+        logging.error(f"文件不存在: file_id={file_id}, path={file_path}")
+        resp = {"type": "download_media", "status": "error", "message": f"文件不存在: {file_id}", "request_id": request_id}
+        send_response(client_sock, resp)
+        return resp
     file_size = os.path.getsize(file_path)
     chunk_size = 1024 * 1024  # 1MB
 
-    with open(file_path, "rb") as f:
-        chunk = f.read(chunk_size)
-        encoded_data = base64.b64encode(chunk).decode('utf-8')
-        resp = {
-            "type": "download_media",
-            "status": "success",
-            "file_data": encoded_data,
-            "file_size": file_size,
-            "request_id": request_id
-        }
+    try:
+        with open(file_path, "rb") as f:
+            f.seek(offset)
+            chunk = f.read(chunk_size)
+            if not chunk:
+                resp = {
+                    "type": "download_media",
+                    "status": "success",
+                    "file_data": "",
+                    "file_size": file_size,
+                    "offset": offset,
+                    "is_complete": True,
+                    "request_id": request_id
+                }
+            else:
+                encoded_data = base64.b64encode(chunk).decode('utf-8')
+                resp = {
+                    "type": "download_media",
+                    "status": "success",
+                    "file_data": encoded_data,
+                    "file_size": file_size,
+                    "offset": offset,
+                    "is_complete": False,
+                    "request_id": request_id
+                }
+            send_response(client_sock, resp)
+            logging.debug(f"发送下载块: file_id={file_id}, offset={offset}, size={len(chunk)}, path={file_path}")
+        return resp
+    except Exception as e:
+        logging.error(f"文件下载失败: {e}, path={file_path}")
+        resp = {"type": "download_media", "status": "error", "message": f"文件下载失败: {e}", "request_id": request_id}
         send_response(client_sock, resp)
-    return resp
+        return resp
 
 def get_chat_history_paginated(request: dict, client_sock: socket.socket) -> dict:
     """处理分页获取聊天记录请求，同时返回附件信息（如果存在）"""
