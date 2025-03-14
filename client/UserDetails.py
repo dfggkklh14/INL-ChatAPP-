@@ -452,26 +452,35 @@ class UserDetails(QWidget):
 
     async def _update_profile(self, field_type: str = None, field_value: str = None, avatar_pixmap: QPixmap = None):
         original_value = getattr(self, field_type, None) if field_type else None
+        resp = None
         if avatar_pixmap:
             resp = await self.client.upload_avatar(avatar_pixmap)
-            if resp.get("status") == "success":
-                FloatingLabel("头像上传成功", self).show()
-                self.avatar = avatar_pixmap
-                self.update_avatar()
-            else:
-                FloatingLabel(f"头像上传失败: {resp.get('message', '未知错误')}", self).show()
         elif field_type and field_value:
-            method = self.client.update_friend_remarks if field_type == "name" and self.from_online else getattr(self.client, f"update_{field_type}")
+            method = self.client.update_friend_remarks if field_type == "name" and self.from_online else getattr(
+                self.client, f"update_{field_type}")
             target = self.username if self.from_online else field_value
             resp = await method(target, field_value) if self.from_online else await method(field_value)
+
+        if resp:
             if resp.get("status") == "success":
-                msg = "备注更新成功" if self.from_online else f"{field_type}更新成功"
-                FloatingLabel(msg, self).show()
-                setattr(self, field_type, field_value)
-                if self.from_online and hasattr(self.parent().parent(), 'update_friend_list'):
-                    await self.parent().parent().update_friend_list()
+                # 根据 field_type 或头像更新选择提示
+                msg_map = {
+                    "sign": "签名更新成功",
+                    "name": "昵称更新成功" if not self.from_online else resp.get("message") ,
+                    None: "头像上传成功"
+                }
+                FloatingLabel(msg_map[field_type], self).show()
+                if avatar_pixmap:
+                    self.avatar = avatar_pixmap
+                    self.update_avatar()
+                elif field_type:
+                    setattr(self, field_type, field_value)
+                    if self.from_online and hasattr(self.parent().parent(), 'update_friend_list'):
+                        await self.parent().parent().update_friend_list()
             else:
-                FloatingLabel(f"更新失败: {resp.get('message', '未知错误')}", self).show()
+                # 使用服务器返回的错误消息
+                error_msg = resp.get("message", "未知错误")
+                FloatingLabel(f"更新失败: {error_msg}", self).show()
                 if field_type:
                     setattr(self, field_type, original_value)
                     (self.name_label if field_type == "name" else self.sign_label).setText(original_value)

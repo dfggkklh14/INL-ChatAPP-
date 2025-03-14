@@ -269,7 +269,19 @@ class ChatWindow(QWidget):
 
         self.friend_list.clearSelection()
         self.client.current_friend = None
-        self.clear_chat_area()
+
+        # 检查并清理现有的 self.user_details_right
+        if self.user_details_right and not sip.isdeleted(self.user_details_right):
+            theme_manager.unregister(self.user_details_right)
+            self.user_details_right.hide()
+            self.right_layout.removeWidget(self.user_details_right)
+            self.user_details_right.deleteLater()
+            self.user_details_right = None
+            self.chat_components['right_panel'].setFixedWidth(0)
+            if not self.isMaximized():
+                self.resize(self.width() - 330, self.height())
+
+        self.clear_chat_area()  # 清理其他组件
 
         resp = await self.client.get_user_info()
         if resp.get("status") != "success":
@@ -277,38 +289,26 @@ class ChatWindow(QWidget):
             self.default_label.show()
             return
 
+        # 创建新的 UserDetails
         avatar_id = resp.get("avatar_id")
         avatar = None
         cache_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "avatars")
-        os.makedirs(cache_dir, exist_ok=True)  # 确保缓存目录存在
+        os.makedirs(cache_dir, exist_ok=True)
         save_path = os.path.join(cache_dir, avatar_id) if avatar_id else None
 
-        # 检查本地缓存
         if avatar_id and os.path.exists(save_path):
             avatar = QPixmap(save_path)
             if avatar.isNull():
-                logging.warning(f"本地缓存头像无效: {save_path}")
-                os.remove(save_path)  # 删除无效缓存文件
+                os.remove(save_path)
                 avatar = None
-            else:
-                logging.debug(f"使用本地缓存头像: {save_path}")
 
-        # 如果没有有效缓存，从服务器下载
         if not avatar and avatar_id:
             resp_download = await self.client.download_media(avatar_id, save_path)
             if resp_download.get("status") == "success":
                 avatar = QPixmap(save_path)
                 if avatar.isNull():
-                    logging.error(f"加载下载的头像失败: {save_path}")
-                    os.remove(save_path)  # 删除无效文件
+                    os.remove(save_path)
                     avatar = None
-                else:
-                    logging.debug(f"成功下载并缓存头像: {save_path}")
-            else:
-                logging.error(f"下载头像失败: {resp_download.get('message', '未知错误')}")
-
-        if not avatar:
-            logging.warning(f"未获取到有效头像: avatar_id={avatar_id}")
 
         self.user_details_widget = UserDetails(
             client=self.client,
@@ -558,30 +558,42 @@ class ChatWindow(QWidget):
         self.add_button.setFixedWidth(width - self.mode_switch_button.width() - 2)
 
     def clear_chat_area(self) -> None:
+        # 清理 self.user_details_right
         if self.user_details_right and not sip.isdeleted(self.user_details_right):
             theme_manager.unregister(self.user_details_right)
+            self.user_details_right.hide()  # 先隐藏，避免事件处理
+            self.right_layout.removeWidget(self.user_details_right)  # 从布局中移除
             self.user_details_right.deleteLater()
             self.user_details_right = None
-            # 如果是非最大化状态，减少窗口宽度
             if not self.isMaximized() and self.chat_components['right_panel'].width() > 0:
                 self.resize(self.width() - 330, self.height())
             self.chat_components['right_panel'].setFixedWidth(0)
 
+        # 清理 ImageViewer
         if self.image_viewer and not sip.isdeleted(self.image_viewer):
             theme_manager.unregister(self.image_viewer)
             self.image_viewer.hide_viewer()
+
+        # 清理聊天组件
         for comp in self.chat_components.values():
-            if comp:
+            if comp and not sip.isdeleted(comp):
                 comp.deleteLater()
         self.chat_components = {k: None for k in
                                 ['area_widget', 'scroll', 'input', 'send_button', 'online', 'chat', 'right_panel']}
-        if self.scroll_to_bottom_btn:
+
+        # 清理滚动按钮
+        if self.scroll_to_bottom_btn and not sip.isdeleted(self.scroll_to_bottom_btn):
             self.scroll_to_bottom_btn.deleteLater()
             self.scroll_to_bottom_btn = None
+
+        # 清理 self.user_details_widget
         if self.user_details_widget and not sip.isdeleted(self.user_details_widget):
             theme_manager.unregister(self.user_details_widget)
+            self.user_details_widget.hide()  # 先隐藏
+            self.content_layout.removeWidget(self.user_details_widget)  # 从布局中移除
             self.user_details_widget.deleteLater()
             self.user_details_widget = None
+
         self.default_label.show()
 
     def setup_chat_area(self) -> None:
