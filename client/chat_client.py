@@ -49,7 +49,7 @@ class ChatClient:
         self.on_conversations_update_callback = None
         self._init_connection()
         # 添加缓存目录
-        self.cache_dir = os.path.join(os.getcwd(), "Chat_DATA")
+        self.cache_dir = os.path.join(os.getcwd(), "Chat_DATA", "cache")
         os.makedirs(self.cache_dir, exist_ok=True)
 
     def _init_connection(self):
