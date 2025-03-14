@@ -1093,33 +1093,27 @@ class ChatWindow(QWidget):
             uname = friend["username"]
             avatar_id = friend.get("avatar_id")
             avatar_pixmap = None
-
+            was_downloaded = False
             if avatar_id:
                 save_path = os.path.join(cache_dir, avatar_id)
                 if os.path.exists(save_path):
                     avatar_pixmap = QPixmap(save_path)
                     if avatar_pixmap.isNull():
                         logging.debug(f"本地缓存头像无效: {save_path}")
-                        avatar_pixmap = None  # 不删除文件，仅标记为无效
-
+                        avatar_pixmap = None
                 if not avatar_pixmap:
                     logging.debug(f"正在下载头像 {uname}: {avatar_id}")
                     resp = await self.client.download_media(avatar_id, save_path)
                     if resp.get("status") == "success":
                         avatar_pixmap = QPixmap(save_path)
-                        if avatar_pixmap.isNull():
-                            logging.debug(f"下载的头像无效: {save_path}")
-                            avatar_pixmap = None
-                        else:
+                        if not avatar_pixmap.isNull():
                             logging.debug(f"成功下载头像 {uname}: {save_path}")
-                    else:
-                        logging.debug(f"下载头像失败 {uname}: {resp.get('message', '未知错误')}")
-
-            # 如果下载成功，更新头像
-            if avatar_pixmap and not sip.isdeleted(widget):
-                widget.avatar_pixmap = avatar_pixmap
-                widget.update_display()
-                logging.debug(f"已更新 {uname} 的头像")
+                            was_downloaded = True
+                if avatar_pixmap and not sip.isdeleted(widget):
+                    widget.avatar_pixmap = avatar_pixmap
+                    widget.update_display()
+                    if was_downloaded:
+                        logging.debug(f"已更新 {uname} 的头像")
 
         # 为每个好友启动异步头像下载任务
         tasks = []
@@ -1207,9 +1201,7 @@ class ChatWindow(QWidget):
             self.client.current_friend = None
             return
         friend = self.friend_list.itemWidget(item).username
-        # 仅当好友实际切换时重置聊天区域
         if friend == self.client.current_friend:
-            # 如果只是更新（如名字变化），仅更新在线状态
             online_status = any(f["username"] == friend and f.get("online", False) for f in self.client.friends)
             if (online_widget := self.chat_components.get('online')):
                 online_widget.update_status(friend, online_status)
@@ -1224,7 +1216,7 @@ class ChatWindow(QWidget):
         sb = self.chat_components['scroll'].verticalScrollBar()
         if sb.maximum() - sb.value() <= 5:
             self.unread_messages[friend] = 0
-        await self.update_friend_list()
+        # await self.update_friend_list()  # 注释掉无条件更新
 
     def show_notification(self, sender: str, msg: str) -> None:
         self.notification_sender = sender.replace("用户 ", "").rstrip(":")
