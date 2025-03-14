@@ -48,9 +48,12 @@ class ChatClient:
         self.conversation_times = {}
         self.on_conversations_update_callback = None
         self._init_connection()
-        # 添加缓存目录
-        self.cache_dir = os.path.join(os.getcwd(), "Chat_DATA", "cache")
-        os.makedirs(self.cache_dir, exist_ok=True)
+        # 统一缓存目录，与 main.py 一致
+        self.cache_root = os.path.join(os.path.dirname(__file__), "Chat_DATA")
+        self.avatar_dir = os.path.join(self.cache_root, "avatars")
+        self.thumbnail_dir = os.path.join(self.cache_root, "thumbnails")
+        os.makedirs(self.avatar_dir, exist_ok=True)
+        os.makedirs(self.thumbnail_dir, exist_ok=True)
 
     def _init_connection(self):
         self.is_authenticated = False
@@ -111,13 +114,10 @@ class ChatClient:
     async def _recv_async(self, size: int) -> bytes:
         data = b""
         while len(data) < size:
-            logging.debug(f"等待接收 {size - len(data)} 字节 at {time.time()}")
-            # 使用 asyncio 的 socket 直接读取，避免线程池
             chunk = await asyncio.get_event_loop().sock_recv(self.client_socket, size - len(data))
             if not chunk:
                 raise ConnectionError("连接断开")
             data += chunk
-            logging.debug(f"收到 {len(chunk)} 字节 at {time.time()}")
         return data
 
     async def authenticate(self, username: str, password: str) -> str:
@@ -161,60 +161,43 @@ class ChatClient:
         """持续读取服务器推送的消息，并处理缩略图和头像下载"""
         while True:
             try:
-                # 接收消息头部 (4 字节)
-                logging.debug(f"开始接收消息头部 at {time.time()}")
                 header = await self._recv_async(4)
                 if len(header) < 4:
                     logging.warning("接收到的头部数据不完整，继续等待")
                     continue
                 length = int.from_bytes(header, 'big')
-                logging.debug(f"头部接收完成，负载长度: {length} at {time.time()}")
-
-                # 接收加密负载
                 encrypted_payload = await self._recv_async(length)
                 resp = self._decrypt(encrypted_payload)
-                logging.debug(f"收到服务器推送响应: {resp} at {time.time()}")
 
-                # 处理响应
                 req_id = resp.get("request_id")
                 if req_id in self.pending_requests:
-                    # 处理请求-响应对
                     self.pending_requests.pop(req_id).set_result(resp)
                 elif resp.get("type") == "new_message" and self.on_new_message_callback:
-                    # 新消息推送
                     asyncio.create_task(self.on_new_message_callback(resp))
                 elif resp.get("type") == "new_media" and self.on_new_media_callback:
-                    # 处理新媒体消息的缩略图下载
                     if "thumbnail_path" in resp:
                         thumbnail_path = resp["thumbnail_path"]
                         file_id = os.path.basename(thumbnail_path)
-                        save_path = os.path.join(self.cache_dir, file_id)
+                        save_path = os.path.join(self.thumbnail_dir, file_id)
                         if not os.path.exists(save_path):
                             await self.download_media(file_id, save_path)
                         resp["thumbnail_local_path"] = save_path
                     asyncio.create_task(self.on_new_media_callback(resp))
                 elif resp.get("type") == "friend_list_update":
-                    # 处理好友列表更新，优化头像下载
                     self.friends = resp.get("friends", [])
-                    # 并发下载所有缺失的头像
                     download_tasks = []
                     for friend in self.friends:
                         avatar_id = friend.get("avatar_id")
                         if avatar_id:
-                            save_path = os.path.join(self.cache_dir, avatar_id)
+                            save_path = os.path.join(self.avatar_dir, avatar_id)
                             if not os.path.exists(save_path):
-                                logging.debug(f"计划下载头像: {avatar_id} at {time.time()}")
                                 download_tasks.append(self.download_media(avatar_id, save_path))
                             else:
                                 friend["avatar_local_path"] = save_path
-                                logging.debug(f"使用缓存头像: {avatar_id}")
                     if download_tasks:
-                        await asyncio.gather(*download_tasks)  # 并发执行下载
-                        logging.debug(f"完成所有头像下载任务: {len(download_tasks)} 个")
-                    # 非阻塞调用 UI 更新回调
+                        await asyncio.gather(*download_tasks)
                     if self.on_friend_list_update_callback:
                         asyncio.create_task(self.on_friend_list_update_callback(self.friends))
-                        logging.debug(f"触发好友列表更新回调 at {time.time()}")
                 elif resp.get("type") == "Update_Remarks" and self.on_update_remarks_callback:
                     asyncio.create_task(self.on_update_remarks_callback(resp))
                 elif resp.get("type") == "all_conversations_update" and self.on_conversations_update_callback:
@@ -222,8 +205,8 @@ class ChatClient:
                 elif resp.get("type") == "last_message_update" and self.on_conversations_update_callback:
                     self.last_message_update(resp)
             except Exception as e:
-                logging.error(f"读取推送消息失败: {e} at {time.time()}")
-                await asyncio.sleep(1)  # 出错后等待1秒再重试
+                logging.error(f"读取推送消息失败: {e}")
+                await asyncio.sleep(1)
 
     def get_last_message(self, friend_username: str) -> str:
         return self.conversations.get(friend_username, "")
@@ -272,7 +255,7 @@ class ChatClient:
         resp = await self.send_request(req)
         if resp.get("status") == "success" and "avatar_id" in resp:
             avatar_id = resp["avatar_id"]
-            save_path = os.path.join(self.cache_dir, avatar_id)
+            save_path = os.path.join(self.avatar_dir, avatar_id)
             if not os.path.exists(save_path):
                 await self.download_media(avatar_id, save_path)
             resp["avatar_local_path"] = save_path
@@ -304,7 +287,7 @@ class ChatClient:
                 ciphertext = self._encrypt(req)
                 msg = self._pack_message(ciphertext)
                 self.client_socket.send(msg)
-            fut = asyncio.get_running_loop().create_future()
+            fut = asyncio.get_event_loop().create_future()
             self.pending_requests[req.get("request_id")] = fut
             return await fut
         except Exception as e:
@@ -321,12 +304,11 @@ class ChatClient:
         }
         resp = await self.send_request(req)
         parsed_resp = await self.parse_response(resp)
-        # 处理历史记录中的缩略图
         for entry in parsed_resp["data"]:
             if "thumbnail_path" in entry:
                 thumbnail_path = entry["thumbnail_path"]
                 file_id = os.path.basename(thumbnail_path)
-                save_path = os.path.join(self.cache_dir, file_id)
+                save_path = os.path.join(self.thumbnail_dir, file_id)
                 if not os.path.exists(save_path):
                     await self.download_media(file_id, save_path)
                 entry["thumbnail_local_path"] = save_path
@@ -411,7 +393,7 @@ class ChatClient:
         resp = await self.send_request(req)
         if resp.get("status") == "success" and "avatar_id" in resp:
             avatar_id = resp["avatar_id"]
-            save_path = os.path.join(self.cache_dir, avatar_id)
+            save_path = os.path.join(self.avatar_dir, avatar_id)
             if not os.path.exists(save_path):
                 await self.download_media(avatar_id, save_path)
             resp["avatar_local_path"] = save_path
@@ -441,7 +423,7 @@ class ChatClient:
         resp = await self.send_request(req)
         return resp
 
-    async def download_media(self, file_id: str, save_path: str, progress_callback: Optional[Callable] = None,) -> dict:
+    async def download_media(self, file_id: str, save_path: str, progress_callback: Optional[Callable] = None) -> dict:
         received_size = 0
         offset = 0
         try:

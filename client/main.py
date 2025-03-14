@@ -928,7 +928,7 @@ class ChatWindow(QWidget):
                 file_type = self.client._detect_file_type(file_path)
                 file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 file_size_str = f"{file_size_mb:.2f} MB"
-                thumbnail_path = generate_thumbnail(file_path, file_type) if file_type in ('image', 'video') else None
+                thumbnail_path = generate_thumbnail(file_path, file_type, output_dir=os.path.join(os.path.dirname(__file__), "Chat_DATA", "thumbnails")) if file_type in ('image', 'video') else None
                 wt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 bubble = ChatBubbleWidget(
                     message, format_time(wt), "right", True, file_type, None,
