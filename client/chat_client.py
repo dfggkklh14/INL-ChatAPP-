@@ -158,7 +158,7 @@ class ChatClient:
         return friend_username
 
     async def start_reader(self):
-        """持续读取服务器推送的消息，并处理缩略图和头像下载"""
+        """持续读取服务器推送的消息"""
         while True:
             try:
                 header = await self._recv_async(4)
@@ -184,19 +184,11 @@ class ChatClient:
                         resp["thumbnail_local_path"] = save_path
                     asyncio.create_task(self.on_new_media_callback(resp))
                 elif resp.get("type") == "friend_list_update":
+                    logging.debug(f"收到好友列表更新: {resp}")
                     self.friends = resp.get("friends", [])
-                    download_tasks = []
-                    for friend in self.friends:
-                        avatar_id = friend.get("avatar_id")
-                        if avatar_id:
-                            save_path = os.path.join(self.avatar_dir, avatar_id)
-                            if not os.path.exists(save_path):
-                                download_tasks.append(self.download_media(avatar_id, save_path))
-                            else:
-                                friend["avatar_local_path"] = save_path
-                    if download_tasks:
-                        await asyncio.gather(*download_tasks)
+                    # 移除头像下载逻辑，仅更新好友列表
                     if self.on_friend_list_update_callback:
+                        logging.debug("调用好友列表更新回调")
                         asyncio.create_task(self.on_friend_list_update_callback(self.friends))
                 elif resp.get("type") == "Update_Remarks" and self.on_update_remarks_callback:
                     asyncio.create_task(self.on_update_remarks_callback(resp))

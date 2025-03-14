@@ -1005,7 +1005,11 @@ class ChatWindow(QWidget):
         self.unread_messages[sender] = self.unread_messages.get(sender, 0) + 1
 
         if msg_type == "new_media" and file_type == "image" and file_id:
-            self.image_list.insert(0, (file_id, original_file_name or f"image_{file_id}"))
+            image_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "images")
+            os.makedirs(image_dir, exist_ok=True)
+            thumbnail_path = os.path.join(image_dir, f"{original_file_name or file_id}")
+            if not os.path.exists(thumbnail_path) and file_id:
+                await self.client.download_media(file_id, thumbnail_path)
 
         if sender == self.client.current_friend:
             if not self.chat_components.get('chat'):
@@ -1054,6 +1058,7 @@ class ChatWindow(QWidget):
         cache_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "avatars")
         os.makedirs(cache_dir, exist_ok=True)
 
+        # 第一步：先用默认头像快速创建好友列表
         for friend in self._sort_friends(friends):
             if "username" not in friend:
                 logging.debug(f"跳过无效的好友条目: {friend}")
@@ -1067,32 +1072,11 @@ class ChatWindow(QWidget):
             online = friend.get("online", False)
             avatar_id = friend.get("avatar_id")
             last_message = self.client.get_last_message(uname)
-            avatar_pixmap = None
 
-            if avatar_id:
-                save_path = os.path.join(cache_dir, avatar_id)
-                logging.debug(f"检查头像 {uname}: {save_path}")
-                if os.path.exists(save_path):
-                    avatar_pixmap = QPixmap(save_path)
-                    logging.debug(f"已加载缓存头像 {uname}: {'valid' if not avatar_pixmap.isNull() else 'invalid'}")
-                    if avatar_pixmap.isNull():
-                        os.remove(save_path)
-                        avatar_pixmap = None
-
-                if not avatar_pixmap:
-                    logging.debug(f"正在下载头像 {uname}: {avatar_id}")
-                    resp = await self.client.download_media(avatar_id, save_path)
-                    logging.debug(f"下载结果 {uname}: {resp}")
-                    if resp.get("status") == "success":
-                        avatar_pixmap = QPixmap(save_path)
-                        if avatar_pixmap.isNull():
-                            os.remove(save_path)
-                            avatar_pixmap = None
-
+            # 初始时不加载头像，直接使用默认头像
             item = QListWidgetItem(self.friend_list)
             item.setSizeHint(QSize(self.friend_list.width(), 55))
-            widget = FriendItemWidget(uname, name, online, unread_count, avatar_pixmap, last_message_time, last_message)
-            logging.debug(f"创建的小部件 {uname}")
+            widget = FriendItemWidget(uname, name, online, unread_count, None, last_message_time, last_message)
             self.friend_list.setItemWidget(item, widget)
             theme_manager.register(widget)
 
@@ -1102,8 +1086,56 @@ class ChatWindow(QWidget):
                     online_widget.update_status(uname, friend.get("online", False))
 
         self.friend_list.updateGeometry()
+        logging.debug(f"已添加好友总数: {self.friend_list.count()}")
+
+        # 第二步：异步下载头像并更新
+        async def update_avatar(friend, item, widget):
+            uname = friend["username"]
+            avatar_id = friend.get("avatar_id")
+            avatar_pixmap = None
+
+            if avatar_id:
+                save_path = os.path.join(cache_dir, avatar_id)
+                if os.path.exists(save_path):
+                    avatar_pixmap = QPixmap(save_path)
+                    if avatar_pixmap.isNull():
+                        logging.debug(f"本地缓存头像无效: {save_path}")
+                        avatar_pixmap = None  # 不删除文件，仅标记为无效
+
+                if not avatar_pixmap:
+                    logging.debug(f"正在下载头像 {uname}: {avatar_id}")
+                    resp = await self.client.download_media(avatar_id, save_path)
+                    if resp.get("status") == "success":
+                        avatar_pixmap = QPixmap(save_path)
+                        if avatar_pixmap.isNull():
+                            logging.debug(f"下载的头像无效: {save_path}")
+                            avatar_pixmap = None
+                        else:
+                            logging.debug(f"成功下载头像 {uname}: {save_path}")
+                    else:
+                        logging.debug(f"下载头像失败 {uname}: {resp.get('message', '未知错误')}")
+
+            # 如果下载成功，更新头像
+            if avatar_pixmap and not sip.isdeleted(widget):
+                widget.avatar_pixmap = avatar_pixmap
+                widget.update_display()
+                logging.debug(f"已更新 {uname} 的头像")
+
+        # 为每个好友启动异步头像下载任务
+        tasks = []
         for i in range(self.friend_list.count()):
-            logging.debug(f"已添加好友总数: {self.friend_list.count()}")
+            item = self.friend_list.item(i)
+            widget = self.friend_list.itemWidget(item)
+            if widget:
+                friend = next(f for f in friends if f["username"] == widget.username)
+                tasks.append(update_avatar(friend, item, widget))
+
+        # 并发执行所有头像下载任务
+        if tasks:
+            await asyncio.gather(*tasks)
+
+        # 更新主题样式
+        for i in range(self.friend_list.count()):
             item = self.friend_list.item(i)
             widget = self.friend_list.itemWidget(item)
             if widget:

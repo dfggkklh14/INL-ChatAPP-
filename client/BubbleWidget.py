@@ -119,6 +119,9 @@ class ChatBubbleWidget(QWidget):
         "image": "图片",
         "video": "视频"
     }
+    VIDEO_CACHE_DIR = os.path.join(os.path.dirname(__file__), "Chat_DATA", "videos")
+    IMAGE_CACHE_DIR = os.path.join(os.path.dirname(__file__), "Chat_DATA", "images")  # 完整图像
+    THUMBNAIL_CACHE_DIR = os.path.join(os.path.dirname(__file__), "Chat_DATA", "thumbnails")  # 缩略图
 
     def __init__(self, message: str, time_str: str, align: str = 'left', is_current_user: bool = False,
                  message_type: str = 'text', file_id: Optional[str] = None, original_file_name: Optional[str] = None,
@@ -289,8 +292,11 @@ class ChatBubbleWidget(QWidget):
         self.content_widget.setStyleSheet("background: transparent; border: none;")
         if self.thumbnail_path and os.path.exists(self.thumbnail_path):
             self.original_image = QImage(self.thumbnail_path)
+            if self.original_image.isNull():
+                self.content_widget.setText("缩略图加载失败")
+                self.original_image = None
         else:
-            self.content_widget.setText("图片加载失败")
+            self.content_widget.setText("缩略图不可用")
             self.original_image = None
         self.content_widget.setAlignment(Qt.AlignCenter)
         self.content_widget.setCursor(Qt.PointingHandCursor)
@@ -686,13 +692,24 @@ class ChatBubbleWidget(QWidget):
             QMessageBox.critical(self, "错误", f"下载{label}时发生错误: {e}")
 
     async def download_and_play_video(self, file_id: str) -> None:
-        video_dir = os.path.join(os.getcwd(), "Chat_DATA", "videos")
         try:
-            os.makedirs(video_dir, exist_ok=True)
+            os.makedirs(self.VIDEO_CACHE_DIR, exist_ok=True)
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法创建视频目录: {e}")
             return
-        save_path = os.path.join(video_dir, f"{self.original_file_name or file_id}.mp4")
+
+        save_path = os.path.join(self.VIDEO_CACHE_DIR, f"{self.original_file_name or file_id}.mp4")
+        if os.path.exists(save_path):
+            try:
+                if os.path.getsize(save_path) > 0:
+                    os.startfile(save_path)
+                    return
+                else:
+                    os.remove(save_path)
+            except Exception as e:
+                QMessageBox.warning(self, "警告", f"缓存视频无效，将重新下载: {e}")
+                os.remove(save_path) if os.path.exists(save_path) else None
+
         original_type = self.message_type
         self.message_type = 'video'
         await self._download_media_common(file_id, save_path, lambda: os.startfile(save_path), "视频")
@@ -752,10 +769,48 @@ class ChatBubbleWidget(QWidget):
             menu.exec_(self.mapToGlobal(pos))
 
     def on_image_clicked(self, event) -> None:
-        if event.button() == Qt.LeftButton and self.file_id:
-            chat_window = self.window()
-            if hasattr(chat_window, 'show_image_viewer'):
-                chat_window.show_image_viewer(self.file_id, self.original_file_name)
+        if event.button() != Qt.LeftButton or not self.file_id:
+            return
+
+        chat_window = self.window()
+        if not hasattr(chat_window, 'show_image_viewer'):
+            return
+
+        # 定义完整图像缓存路径
+        try:
+            os.makedirs(self.IMAGE_CACHE_DIR, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法创建图片目录: {e}")
+            return
+
+        image_path = os.path.join(self.IMAGE_CACHE_DIR, f"{self.original_file_name or self.file_id}")
+
+        # 检查缓存
+        if os.path.exists(image_path):
+            try:
+                pixmap = QPixmap(image_path)
+                if not pixmap.isNull():
+                    chat_window.show_image_viewer(self.file_id, self.original_file_name)
+                    return
+                else:
+                    os.remove(image_path)  # 删除无效缓存
+            except Exception as e:
+                QMessageBox.warning(self, "警告", f"缓存图片无效，将重新下载: {e}")
+                os.remove(image_path) if os.path.exists(image_path) else None
+
+        # 如果没有缓存，进行下载
+        async def download_and_show():
+            try:
+                await self._download_media_common(
+                    self.file_id,
+                    image_path,
+                    lambda: chat_window.show_image_viewer(self.file_id, self.original_file_name),
+                    "图片"
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"下载图片时发生错误: {e}")
+
+        asyncio.create_task(download_and_show())
 
     def copy_text(self) -> None:
         if self.message_type == 'text' and hasattr(self, 'content_widget'):
