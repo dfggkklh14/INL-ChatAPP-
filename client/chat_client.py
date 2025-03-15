@@ -43,6 +43,8 @@ class ChatClient:
             'retries': 5,
             'delay': 2
         }
+        self.is_running = True
+        self.reader_task = None
         self.friends = []
         self.conversations = {}
         self.conversation_times = {}
@@ -198,6 +200,8 @@ class ChatClient:
                     self.last_message_update(resp)
             except Exception as e:
                 logging.error(f"读取推送消息失败: {e}")
+                if not self.is_running:
+                    break  # 如果已关闭，直接退出循环
                 await asyncio.sleep(1)
 
     def get_last_message(self, friend_username: str) -> str:
@@ -490,16 +494,26 @@ class ChatClient:
         return res
 
     async def close_connection(self):
-        try:
-            req = {
-                "type": "exit",
-                "username": self.username,
-                "request_id": str(uuid.uuid4())
-            }
-            await self.send_request(req)
-        except Exception as e:
-            pass
-        try:
-            self.client_socket.close()
-        except Exception as e:
-            pass
+        self.is_running = False  # 先停止 reader
+        if self.reader_task and not self.reader_task.done():
+            try:
+                self.reader_task.cancel()
+                await asyncio.wait([self.reader_task], timeout=1.0)  # 等待 reader 退出
+            except Exception as e:
+                logging.error(f"取消 reader 任务失败: {e}")
+
+        if self.client_socket:
+            try:
+                req = {"type": "exit", "username": self.username, "request_id": str(uuid.uuid4())}
+                await self.send_request(req)
+            except Exception as e:
+                logging.error(f"发送退出请求失败: {e}")
+            finally:
+                try:
+                    self.client_socket.close()
+                except Exception as e:
+                    logging.error(f"关闭 socket 失败: {e}")
+                self.client_socket = None
+        self.is_authenticated = False
+        self.username = None
+        logging.info("客户端连接已关闭")

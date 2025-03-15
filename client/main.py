@@ -134,8 +134,7 @@ class LoginWindow(QDialog):
         else:
             QMessageBox.critical(self, "错误", res)
 
-    def closeEvent(self, event) -> None:
-        self.main_app.quit_app()
+    def closeEvent(self, event):
         event.accept()
 
 # 添加好友对话框
@@ -1273,18 +1272,19 @@ class ChatWindow(QWidget):
             create_themed_message_box(self, "提示", res).exec_()
             dialog.accept()
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event):
         # 关闭所有打开的 FileConfirmDialog
         for dialog in self.findChildren(FileConfirmDialog):
             if not sip.isdeleted(dialog):
                 dialog.close()
-                theme_manager.unregister(dialog)
-        # 清理主题管理器的观察者（可选）
-        theme_manager.clear_observers()
-        event.ignore()
-        self.friend_list.clearSelection()
+        # 清理聊天区域
         self.clear_chat_area()
+        theme_manager.clear_observers()
+        # 重置客户端状态
         self.client.current_friend = None
+        self.friend_list.clearSelection()
+        # 隐藏窗口，不退出程序
+        event.ignore()
         self.hide()
 
     def keyPressEvent(self, event) -> None:
@@ -1369,23 +1369,45 @@ class ChatApp:
     def quit_app(self) -> None:
         async def shutdown():
             try:
+                # 关闭客户端连接
                 if self.login_window.chat_client and self.login_window.chat_client.client_socket:
                     await self.login_window.chat_client.close_connection()
-            except Exception as ex:
-                QMessageBox.critical(self.login_window, '错误', f"退出时关闭连接异常: {ex}", QMessageBox.Ok)
-            for task in [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]:
-                task.cancel()
-            await asyncio.gather(*asyncio.all_tasks(), return_exceptions=True)
-            await self.loop.shutdown_asyncgens()
-            self.tray_icon.hide()
-            self.loop.stop()
-            self.app.quit()
-        run_async(shutdown())
+
+                # 关闭所有窗口
+                if self.chat_window and not sip.isdeleted(self.chat_window):
+                    self.chat_window.close()
+                if self.login_window and not sip.isdeleted(self.login_window):
+                    self.login_window.close()
+
+                # 逐步取消任务，避免递归深度超限
+                tasks = [t for t in asyncio.all_tasks(self.loop) if not t.done()]
+                for task in tasks:
+                    try:
+                        task.cancel()
+                    except Exception as e:
+                        logging.error(f"取消任务 {task} 失败: {e}")
+                if tasks:
+                    try:
+                        await asyncio.wait(tasks, timeout=2.0)  # 设置超时，避免无限等待
+                    except Exception as e:
+                        logging.error(f"等待任务完成失败: {e}")
+
+                # 清理系统托盘
+                self.tray_icon.hide()
+
+            except Exception as e:
+                logging.error(f"退出时发生错误: {e}")
+            finally:
+                self.loop.stop()
+                QApplication.quit()
+
+        asyncio.ensure_future(shutdown())
 
     def run(self) -> None:
         self.login_window.show()
         with self.loop:
-            sys.exit(self.loop.run_forever())
+            self.loop.run_forever()
+        QApplication.quit()
 
 def main() -> None:
     ChatApp().run()
