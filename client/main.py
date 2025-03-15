@@ -288,7 +288,6 @@ class ChatWindow(QWidget):
             QMessageBox.critical(self, "错误", f"获取用户信息失败: {resp.get('message', '未知错误')}")
             self.default_label.show()
             return
-
         # 创建新的 UserDetails
         avatar_id = resp.get("avatar_id")
         avatar = None
