@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import QLabel, QWidget, QSizePolicy, QVBoxLayout, QPushButt
 
 from Interface_Controls import StyleGenerator
 
+
 LOADING_TEXT = '<span style="color: white; font-family: Microsoft YaHei; font-size: 10pt;">加载中...</span>'
 
 
@@ -68,6 +69,7 @@ class DraggableLabel(QLabel):
         pixmap_width = self._pixmap.width()
         pixmap_height = self._pixmap.height()
 
+        # 如果图片小于视口，居中
         if pixmap_width <= viewport.width():
             offset.setX(0)
         else:
@@ -92,15 +94,10 @@ class ImageViewer(QWidget):
         super().__init__(parent)
         self.image_list = []
         self.current_index = -1
-        self.original_pixmap = QPixmap()
-        self.scale_factor = 1.0
+        self.original_pixmap = QPixmap()  # 原始未缩放的图片
+        self.scale_factor = 1.0  # 缩放比例，初始为1.0
         self.loading = False
         self.scroll_area = None
-
-        # 统一缓存根目录
-        self.cache_root = os.path.join(os.path.dirname(__file__), "Chat_DATA")
-        self.image_dir = os.path.join(self.cache_root, "images")
-        os.makedirs(self.image_dir, exist_ok=True)
 
         self._init_ui()
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -138,6 +135,7 @@ class ImageViewer(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # 保留按钮位置调整逻辑
         button_y = (self.height() - 50) // 2
         self.prev_button.move(10, button_y)
         self.next_button.move(self.width() - 60, button_y)
@@ -150,14 +148,17 @@ class ImageViewer(QWidget):
             orig_width = self.original_pixmap.width()
             orig_height = self.original_pixmap.height()
 
+            # 计算适合视口的最小缩放比例：最长边等于视口对应边
             longest_side = max(orig_width, orig_height)
             if longest_side == orig_width:
                 min_scale = viewport.width() / orig_width
             else:
                 min_scale = viewport.height() / orig_height
 
+            # 使用当前缩放比例，但不得小于 min_scale
             effective_scale = max(min_scale, self.scale_factor)
 
+            # 计算缩放后的尺寸
             scaled_width = int(orig_width * effective_scale)
             scaled_height = int(orig_height * effective_scale)
             scaled_pixmap = self.original_pixmap.scaled(
@@ -169,6 +170,7 @@ class ImageViewer(QWidget):
 
     def wheelEvent(self, event):
         if not self.loading and not self.original_pixmap.isNull():
+            # 计算鼠标在图片上的相对位置
             viewport_center = self.image_label.rect().center()
             pixmap = self.image_label._pixmap
             pixmap_center = pixmap.rect().center()
@@ -177,13 +179,15 @@ class ImageViewer(QWidget):
             rel_x = (event.pos().x() - pixmap_x) / self.scale_factor
             rel_y = (event.pos().y() - pixmap_y) / self.scale_factor
 
+            # 计算最小缩放比例
             viewport = self.image_label.size()
             orig_width = self.original_pixmap.width()
             orig_height = self.original_pixmap.height()
             longest_side = max(orig_width, orig_height)
             min_scale = (viewport.width() / orig_width if longest_side == orig_width
-                         else viewport.height() / orig_height)
+                        else viewport.height() / orig_height)
 
+            # 更新缩放比例
             delta = event.angleDelta().y()
             if delta > 0:
                 self.scale_factor = min(5.0, self.scale_factor + 0.2)
@@ -205,7 +209,7 @@ class ImageViewer(QWidget):
     def set_image_list(self, image_list, start_index):
         self.image_list = image_list
         self.current_index = start_index
-        self.scale_factor = 1.0
+        self.scale_factor = 1.0  # 初始值，实际由 update_image 调整
         self.update_buttons()
         self.original_pixmap = QPixmap()
         self.image_label.setPixmap(QPixmap())
@@ -220,7 +224,9 @@ class ImageViewer(QWidget):
         self.original_pixmap = QPixmap()
         self.image_label.setPixmap(QPixmap())
         file_id, original_file_name = self.image_list[self.current_index]
-        save_path = os.path.join(self.image_dir, original_file_name or f"{file_id}.jpg")
+        image_dir = os.path.join(os.getcwd(), "Chat_DATA", "images")
+        os.makedirs(image_dir, exist_ok=True)
+        save_path = os.path.join(image_dir, original_file_name or f"{file_id}.jpg")
 
         try:
             chat_window = self.window()
@@ -229,12 +235,13 @@ class ImageViewer(QWidget):
                 if result.get("status") == "success" and os.path.exists(save_path):
                     self.original_pixmap = QPixmap(save_path)
                     if not self.original_pixmap.isNull() and self.original_pixmap.height() > 0:
+                        # 初次加载时，重置 scale_factor 为适合视口的比例
                         viewport = self.image_label.size()
                         orig_width = self.original_pixmap.width()
                         orig_height = self.original_pixmap.height()
                         longest_side = max(orig_width, orig_height)
                         self.scale_factor = (viewport.width() / orig_width if longest_side == orig_width
-                                             else viewport.height() / orig_height)
+                                           else viewport.height() / orig_height)
                         self.update_image()
                     else:
                         self.image_label.setText("图片加载失败")
@@ -295,14 +302,17 @@ class ImageViewer(QWidget):
         self.update_image()
 
     def keyPressEvent(self, event):
+        """处理键盘事件，支持 ESC 键关闭和左右键翻页"""
         if event.key() == Qt.Key_Escape:
             self.hide_viewer()
             event.accept()
         elif event.key() == Qt.Key_Left and not self.loading:
+            # 左键显示上一张图片
             if self.current_index < len(self.image_list) - 1:
                 self.show_prev_image()
             event.accept()
         elif event.key() == Qt.Key_Right and not self.loading:
+            # 右键显示下一张图片
             if self.current_index > 0:
                 self.show_next_image()
             event.accept()
@@ -321,12 +331,14 @@ class ImageViewer(QWidget):
         menu.exec_(self.mapToGlobal(pos))
 
     def copy_image_to_clipboard(self) -> None:
+        """将当前图片复制到剪贴板"""
         if not self.original_pixmap.isNull():
             clipboard = QApplication.clipboard()
             clipboard.setPixmap(self.original_pixmap)
             QMessageBox.information(self, "成功", "图片已复制到剪贴板")
 
     def download_image(self) -> None:
+        """下载当前图片到本地"""
         if not self.original_pixmap.isNull() and self.current_index >= 0:
             file_id, original_file_name = self.image_list[self.current_index]
             default_name = original_file_name or f"image_{file_id}.jpg"
