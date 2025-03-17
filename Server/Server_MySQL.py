@@ -595,7 +595,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 reader = imageio.get_reader(file_path)
                 frame = reader.get_data(0)
                 thumb_image = Image.fromarray(frame)
-                thumb_image.thumbnail((300, 300), Image.Resampling.NEAREST)
+                thumb_image.thumbnail((350, 350), Image.Resampling.NEAREST)
                 thumbnail_filename = f"thumb_{unique_file_name}.jpg"
                 thumbnail_path = os.path.join(upload_dir, thumbnail_filename)
                 thumb_image.save(thumbnail_path, "JPEG")
@@ -683,6 +683,141 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
             return {"type": "send_media", "status": "error", "message": "保存失败", "request_id": request_id}
         finally:
             conn.close()
+
+def delete_messages(request: dict, client_sock: socket.socket) -> dict:
+    """删除消息（支持单条和批量删除）"""
+    username = request.get("username")
+    rowids = request.get("rowids", [])  # 批量删除的消息 ID 列表
+    rowid = request.get("rowid")  # 单条删除的消息 ID
+    request_id = request.get("request_id")
+
+    target_rowids = rowids if rowids else ([rowid] if rowid else [])
+    if not target_rowids:
+        return {"type": "delete_messages", "status": "error", "message": "未指定要删除的消息", "request_id": request_id}
+
+    conn = get_db_connection()
+    if not conn:
+        return {"type": "delete_messages", "status": "error", "message": "数据库连接失败", "request_id": request_id}
+
+    try:
+        cursor = conn.cursor(dictionary=True)
+
+        # 检查消息是否属于该用户
+        cursor.execute('''
+            SELECT id, sender, receiver
+            FROM messages
+            WHERE id IN (%s) AND (sender = %s OR receiver = %s)
+        ''' % (','.join(['%s'] * len(target_rowids)), '%s', '%s'), tuple(target_rowids + [username, username]))
+        messages_to_delete = cursor.fetchall()
+        if not messages_to_delete:
+            return {"type": "delete_messages", "status": "error", "message": "消息不存在或无权限删除", "request_id": request_id}
+
+        # 第一步：清理 conversations 中引用将被删除消息的记录
+        cursor.execute('''
+            DELETE FROM conversations
+            WHERE lastmessageid IN (%s)
+        ''' % ','.join(['%s'] * len(target_rowids)), tuple(target_rowids))
+        conn.commit()
+
+        # 第二步：删除 messages 中的记录
+        cursor.execute('DELETE FROM messages WHERE id IN (%s)' % ','.join(['%s'] * len(target_rowids)), tuple(target_rowids))
+        conn.commit()
+
+        # 第三步：更新受影响的会话（可选）
+        affected_pairs = {tuple(sorted([msg['sender'], msg['receiver']])) for msg in messages_to_delete}
+        for username, friend in affected_pairs:
+            cursor.execute('''
+                SELECT id, sender, receiver, message, write_time, attachment_type, original_file_name, reply_to, reply_preview
+                FROM messages
+                WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
+                ORDER BY write_time DESC, id DESC
+                LIMIT 1
+            ''', (username, friend, friend, username))
+            latest_message = cursor.fetchone()
+
+            with conversations_lock:
+                sorted_key = (username, friend)
+                if latest_message:
+                    last_message = {
+                        "rowid": latest_message['id'],
+                        "sender": latest_message['sender'],
+                        "receiver": latest_message['receiver'],
+                        "message": latest_message['message'],
+                        "write_time": latest_message['write_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                        "attachment_type": latest_message['attachment_type'],
+                        "original_file_name": latest_message['original_file_name'],
+                        "reply_to": latest_message['reply_to'],
+                        "reply_preview": latest_message['reply_preview']
+                    }
+                    conversations[sorted_key] = {
+                        "last_message": last_message,
+                        "last_update_time": latest_message['write_time']
+                    }
+                    cursor.execute('''
+                        INSERT INTO conversations (username, friend, lastmessageid, lastupdatetime)
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE lastmessageid = %s, lastupdatetime = %s
+                    ''', (username, friend, latest_message['id'], latest_message['write_time'],
+                          latest_message['id'], latest_message['write_time']))
+                else:
+                    if sorted_key in conversations:
+                        del conversations[sorted_key]
+            conn.commit()
+
+            # 推送会话更新
+            if latest_message:
+                simplified_msg = {
+                    "time": last_message["write_time"],
+                    "sender": last_message["sender"],
+                    "content": last_message["message"] if not last_message["attachment_type"] else f"[{last_message['attachment_type']}]"
+                }
+                payload = {
+                    "type": "last_message_update",
+                    "msg_type": last_message["attachment_type"] if last_message["attachment_type"] else "text",
+                    "conversations": [{
+                        "username": username,
+                        "friend": friend,
+                        "last_message": simplified_msg,
+                        "last_update_time": latest_message['write_time'].strftime('%Y-%m-%d %H:%M:%S')
+                    }]
+                }
+                with clients_lock:
+                    for user in [username, friend]:
+                        if user in clients:
+                            send_response(clients[user], payload)
+                            logging.debug(f"推送会话更新给 {user}: {payload}")
+
+        # 返回成功响应
+        response = {
+            "type": "delete_messages",
+            "status": "success",
+            "message": f"成功删除 {len(messages_to_delete)} 条消息",
+            "request_id": request_id,
+            "deleted_rowids": [msg['id'] for msg in messages_to_delete]
+        }
+
+        # 推送删除通知
+        notified_users = set()
+        for msg in messages_to_delete:
+            sender, receiver = msg['sender'], msg['receiver']
+            with clients_lock:
+                if receiver in clients and receiver != username and receiver not in notified_users:
+                    delete_notify = {
+                        "type": "messages_deleted",
+                        "deleted_rowids": [msg['id'] for msg in messages_to_delete],
+                        "from_user": username,
+                        "to_user": receiver
+                    }
+                    send_response(clients[receiver], delete_notify)
+                    notified_users.add(receiver)
+
+        return response
+
+    except Error as e:
+        logging.error(f"删除消息失败: {e}")
+        return {"type": "delete_messages", "status": "error", "message": "删除消息失败", "request_id": request_id}
+    finally:
+        conn.close()
 
 def get_conversations(request: dict, client_sock: socket.socket) -> dict:
     """获取用户会话列表"""
@@ -881,6 +1016,8 @@ def handle_client(client_sock: socket.socket, client_addr):
                 response = add_friend(request, client_sock)
             elif req_type == "Update_Remarks":
                 response = update_friend_remarks(request, client_sock)
+            elif req_type == "delete_messages":
+                response = delete_messages(request, client_sock)
             elif req_type == "exit":
                 response = {"type": "exit", "status": "success", "message": f"{request.get('username')} 已退出", "request_id": request.get("request_id")}
                 send_response(client_sock, response)

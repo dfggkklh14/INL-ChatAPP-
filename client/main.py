@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import logging
 import sys
@@ -1062,88 +1063,174 @@ class ChatWindow(QWidget):
         await self.update_friend_list()
 
     async def update_friend_list(self, friends: Optional[List[dict]] = None) -> None:
-        friends = friends or self.client.friends
-        current_friend = self.client.current_friend
-        self.friend_list.clear()
-        cache_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "avatars")
-        os.makedirs(cache_dir, exist_ok=True)
+        """更新好友列表，确保正确更新有变化的项"""
+        try:
+            friends = friends or self.client.friends
+            current_friend = self.client.current_friend
 
-        # 第一步：先用默认头像快速创建好友列表
-        for friend in self._sort_friends(friends):
-            if "username" not in friend:
-                logging.debug(f"跳过无效的好友条目: {friend}")
-                continue
+            # 规范化好友数据并检查是否变化
+            friend_hash = hashlib.md5(self._normalize_friends(friends).encode()).hexdigest()
+            if hasattr(self, "last_friend_hash") and self.last_friend_hash == friend_hash:
+                logging.debug("好友列表无变化，跳过更新")
+                return
+            self.last_friend_hash = friend_hash
 
-            uname = friend["username"]
-            name = friend.get("name", uname)
-            last_message_time = self.client.conversation_times.get(uname, "") if hasattr(self.client,
-                                                                                         "conversation_times") else ""
-            unread_count = self.unread_messages.get(uname, 0)
-            online = friend.get("online", False)
-            avatar_id = friend.get("avatar_id")
-            last_message = self.client.get_last_message(uname)
+            cache_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "avatars")
+            os.makedirs(cache_dir, exist_ok=True)
 
-            # 初始时不加载头像，直接使用默认头像
-            item = QListWidgetItem(self.friend_list)
-            item.setSizeHint(QSize(self.friend_list.width(), 55))
-            widget = FriendItemWidget(uname, name, online, unread_count, None, last_message_time, last_message)
-            self.friend_list.setItemWidget(item, widget)
-            theme_manager.register(widget)
+            # 构建现有项查找表
+            existing_items = {}
+            for i in range(self.friend_list.count()):
+                item = self.friend_list.item(i)
+                widget = self.friend_list.itemWidget(item)
+                if widget and widget.username and not sip.isdeleted(widget):
+                    existing_items[widget.username] = (item, widget)
 
-            if uname == current_friend:
-                item.setSelected(True)
-                if (online_widget := self.chat_components.get('online')):
-                    online_widget.update_status(uname, friend.get("online", False))
+            # 对好友列表排序
+            sorted_friends = self._sort_friends(friends)
 
-        self.friend_list.updateGeometry()
-        logging.debug(f"已添加好友总数: {self.friend_list.count()}")
+            # 更新或添加好友项
+            for friend in sorted_friends:
+                if "username" not in friend:
+                    logging.debug(f"跳过无效的好友条目: {friend}")
+                    continue
 
-        # 第二步：异步下载头像并更新
-        async def update_avatar(friend, item, widget):
-            uname = friend["username"]
-            avatar_id = friend.get("avatar_id")
+                uname = friend["username"]
+                name = friend.get("name", uname)
+                last_message_time = self.client.conversation_times.get(uname, "") if hasattr(self.client,
+                                                                                             "conversation_times") else ""
+                unread_count = self.unread_messages.get(uname, 0)
+                online = friend.get("online", False)
+                avatar_id = friend.get("avatar_id", "")
+                last_message = self.client.get_last_message(uname)
+
+                try:
+                    if uname in existing_items:
+                        item, widget = existing_items[uname]
+                        needs_update = (
+                                widget.name != name or
+                                widget.online != online or
+                                widget.unread != unread_count or
+                                widget.last_message_time != last_message_time or
+                                widget.last_message != last_message or
+                                widget.avatar_id != avatar_id
+                        )
+                        if needs_update:
+                            logging.debug(f"更新好友项 {uname}: "
+                                          f"name={widget.name}->{name}, "
+                                          f"online={widget.online}->{online}, "
+                                          f"unread={widget.unread}->{unread_count}, "
+                                          f"time={widget.last_message_time}->{last_message_time}, "
+                                          f"message={widget.last_message}->{last_message}, "
+                                          f"avatar_id={widget.avatar_id}->{avatar_id}")
+                            widget.name = name
+                            widget.online = online
+                            widget.unread = unread_count
+                            widget.last_message_time = last_message_time
+                            widget.last_message = last_message
+                            widget.avatar_id = avatar_id
+                            if widget.avatar_id != avatar_id or not widget.avatar_pixmap:
+                                await self._update_widget_avatar(widget, avatar_id, cache_dir)
+                            if not sip.isdeleted(widget):
+                                widget.update_display()
+                        del existing_items[uname]
+                    else:
+                        item = QListWidgetItem(self.friend_list)
+                        item.setSizeHint(QSize(self.friend_list.width(), 55))
+                        widget = FriendItemWidget(uname, name, online, unread_count, None, last_message_time,
+                                                  last_message)
+                        widget.avatar_id = avatar_id
+                        await self._update_widget_avatar(widget, avatar_id, cache_dir)
+                        self.friend_list.setItemWidget(item, widget)
+                        theme_manager.register(widget)
+                        if not sip.isdeleted(widget):
+                            widget.update_display()
+                        logging.debug(f"添加新好友项: {uname}")
+                except Exception as e:
+                    logging.error(f"处理好友 {uname} 时出错: {e}")
+                    continue
+
+            # 删除已不存在的好友项
+            for uname, (item, widget) in existing_items.items():
+                try:
+                    logging.debug(f"删除已不存在的好友项: {uname}")
+                    theme_manager.unregister(widget)
+                    self.friend_list.takeItem(self.friend_list.row(item))
+                    widget.deleteLater()
+                except Exception as e:
+                    logging.error(f"删除好友项 {uname} 失败: {e}")
+
+            # 更新当前选中好友状态
+            if current_friend:
+                for i in range(self.friend_list.count()):
+                    item = self.friend_list.item(i)
+                    widget = self.friend_list.itemWidget(item)
+                    if widget and widget.username == current_friend and not sip.isdeleted(widget):
+                        if not item.isSelected():
+                            item.setSelected(True)
+                        if (online_widget := self.chat_components.get('online')):
+                            online_status = any(
+                                f["username"] == current_friend and f.get("online", False) for f in friends)
+                            online_widget.update_status(current_friend, online_status)
+                        break
+
+            self.friend_list.updateGeometry()
+            logging.debug(f"好友列表更新完成，总数: {self.friend_list.count()}")
+
+        except Exception as e:
+            logging.error(f"更新好友列表时发生异常: {e}")
+
+    def _normalize_friends(self, friends: List[dict]) -> str:
+        """规范化好友数据以计算一致的哈希值"""
+        normalized = [
+            {
+                "username": f.get("username"),
+                "name": f.get("name"),
+                "online": f.get("online"),
+                "avatar_id": f.get("avatar_id", ""),
+                "last_message": self.client.get_last_message(f.get("username", "")),
+                "last_message_time": self.client.conversation_times.get(f.get("username", ""), "") if hasattr(
+                    self.client, "conversation_times") else ""
+            } for f in friends if "username" in f
+        ]
+        return json.dumps(normalized, sort_keys=True)
+
+    async def _update_widget_avatar(self, widget: FriendItemWidget, avatar_id: Optional[str], cache_dir: str) -> None:
+        """更新 widget 的头像"""
+        try:
+            if not avatar_id:
+                widget.avatar_pixmap = None
+                return
+
+            save_path = os.path.join(cache_dir, avatar_id)
             avatar_pixmap = None
-            was_downloaded = False
-            if avatar_id:
-                save_path = os.path.join(cache_dir, avatar_id)
-                if os.path.exists(save_path):
+
+            if os.path.exists(save_path):
+                avatar_pixmap = QPixmap(save_path)
+                if avatar_pixmap.isNull():
+                    logging.debug(f"本地缓存头像无效，重新下载: {save_path}")
+                    os.remove(save_path)
+                    avatar_pixmap = None
+
+            if not avatar_pixmap:
+                logging.debug(f"下载头像 {widget.username}: {avatar_id}")
+                resp = await self.client.download_media(avatar_id, save_path)
+                if resp.get("status") == "success":
                     avatar_pixmap = QPixmap(save_path)
                     if avatar_pixmap.isNull():
-                        logging.debug(f"本地缓存头像无效: {save_path}")
+                        logging.warning(f"头像文件无效: {save_path}")
                         avatar_pixmap = None
-                if not avatar_pixmap:
-                    logging.debug(f"正在下载头像 {uname}: {avatar_id}")
-                    resp = await self.client.download_media(avatar_id, save_path)
-                    if resp.get("status") == "success":
-                        avatar_pixmap = QPixmap(save_path)
-                        if not avatar_pixmap.isNull():
-                            logging.debug(f"成功下载头像 {uname}: {save_path}")
-                            was_downloaded = True
-                if avatar_pixmap and not sip.isdeleted(widget):
-                    widget.avatar_pixmap = avatar_pixmap
-                    widget.update_display()
-                    if was_downloaded:
-                        logging.debug(f"已更新 {uname} 的头像")
+                else:
+                    logging.warning(f"下载头像 {avatar_id} 失败: {resp.get('message', '未知错误')}")
+                    avatar_pixmap = None
 
-        # 为每个好友启动异步头像下载任务
-        tasks = []
-        for i in range(self.friend_list.count()):
-            item = self.friend_list.item(i)
-            widget = self.friend_list.itemWidget(item)
-            if widget:
-                friend = next(f for f in friends if f["username"] == widget.username)
-                tasks.append(update_avatar(friend, item, widget))
-
-        # 并发执行所有头像下载任务
-        if tasks:
-            await asyncio.gather(*tasks)
-
-        # 更新主题样式
-        for i in range(self.friend_list.count()):
-            item = self.friend_list.item(i)
-            widget = self.friend_list.itemWidget(item)
-            if widget:
-                widget.update_theme(theme_manager.current_theme)
+            if avatar_pixmap and not sip.isdeleted(widget):
+                widget.avatar_pixmap = avatar_pixmap
+            else:
+                widget.avatar_pixmap = None  # 失败时回退到默认头像
+        except Exception as e:
+            logging.error(f"更新头像 {widget.username} (ID: {avatar_id}) 失败: {e}")
+            widget.avatar_pixmap = None
 
     async def load_chat_history(self, reset: bool = False) -> None:
         if reset:

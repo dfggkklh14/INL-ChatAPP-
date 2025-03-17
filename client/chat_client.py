@@ -372,6 +372,33 @@ class ChatClient:
         else:
             return 'file'
 
+    async def delete_messages(self, rowids: int | List[int]) -> dict:
+        """
+        删除消息（支持单条或批量删除）
+        :param rowids: 要删除的消息的rowid（整数）或rowid列表
+        :return: 服务器响应字典
+        """
+        if not self.is_authenticated:
+            return {"status": "error", "message": "未登录，无法删除消息"}
+
+        req = {
+            "type": "delete_messages",
+            "username": self.username,
+            "request_id": str(uuid.uuid4())
+        }
+
+        # 根据输入类型设置请求字段
+        if isinstance(rowids, int):
+            req["rowid"] = rowids
+        elif isinstance(rowids, list):
+            if not rowids:
+                return {"status": "error", "message": "消息ID列表不能为空"}
+            req["rowids"] = rowids
+        else:
+            return {"status": "error", "message": "rowids 参数必须是整数或整数列表"}
+
+        return await self.send_request(req)
+
     async def upload_avatar(self, avatar: QPixmap) -> dict:
         buffer = QBuffer()
         buffer.open(QBuffer.WriteOnly)

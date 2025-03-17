@@ -266,7 +266,7 @@ def generate_thumbnail(file_path: str, file_type: str, output_dir: str = "client
     try:
         if file_type == 'image':
             with Image.open(file_path) as img:
-                img.thumbnail((450, 450))
+                img.thumbnail((350, 350))
                 ext = os.path.splitext(file_path)[1].lower()
                 format_map = {'.jpg': 'JPEG', '.jpeg': 'JPEG', '.png': 'PNG', '.gif': 'GIF', '.bmp': 'BMP'}
                 fmt = format_map.get(ext, 'JPEG')
@@ -350,13 +350,14 @@ class FriendItemWidget(QWidget):
     好友项控件，显示用户头像（带2px圆形边框）、名称（宽度不超过110px，总宽度<110时隐藏）及未读消息徽标，在线状态小圆点（带2px边框）显示在头像右下角。
     """
     def __init__(self, username: str, name: str, online: bool = False, unread: int = 0,
-                 avatar_pixmap: Optional[QPixmap] = None,last_message_time: str = "", last_message: str = "", parent: Optional[QWidget] = None) -> None:
+                 avatar_pixmap: Optional[QPixmap] = None, last_message_time: str = "", last_message: str = "", parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.username = username
         self.name = name
         self.online = online
         self.unread = unread
         self.avatar_pixmap = avatar_pixmap
+        self.avatar_id = None  # 新增 avatar_id 属性
         self.last_message = last_message
         self.last_message_time = last_message_time
         self._init_ui()
@@ -394,9 +395,11 @@ class FriendItemWidget(QWidget):
 
         # 名称标签
         self.name_label = QLabel(self)
+        self.name_label.setStyleSheet("background-color: transparent;")
         self.name_label.setFont(FONTS['USERNAME'])
 
         self.message_label = QLabel(self)
+        self.message_label.setStyleSheet("background-color: transparent;")
         self.message_label.setText(self.last_message)
         self.message_label.setFont(QFont("微软雅黑", 8))  # 小一点的字体
 

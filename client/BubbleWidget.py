@@ -764,9 +764,56 @@ class ChatBubbleWidget(QWidget):
             download_action.triggered.connect(lambda: asyncio.create_task(self.download_media_file()))
         reply_action = menu.addAction("回复")
         reply_action.triggered.connect(self.reply_to_message)
+
+        # 添加删除选项（仅当有 rowid 时显示）
+        if self.rowid is not None:
+            delete_action = menu.addAction("删除")
+            delete_action.triggered.connect(lambda: asyncio.create_task(self.delete_message()))
+
         if menu.actions():
             StyleGenerator.apply_style(self, "menu")
             menu.exec_(self.mapToGlobal(pos))
+
+    async def delete_message(self) -> None:
+        """删除当前消息"""
+        chat_window = self.window()
+        if not hasattr(chat_window, 'client') or not self.rowid:
+            QMessageBox.critical(self, "错误", "无法删除消息：客户端未初始化或消息ID缺失")
+            return
+
+        # 调用 ChatClient 的 delete_messages 方法
+        resp = await chat_window.client.delete_messages(self.rowid)
+        if resp.get("status") == "success":
+            # 删除成功，从界面移除气泡
+            self.remove_from_chat_area()
+            QMessageBox.information(self, "提示", "消息已删除")
+        else:
+            QMessageBox.critical(self, "错误", f"删除失败: {resp.get('message', '未知错误')}")
+
+    def remove_from_chat_area(self) -> None:
+        """从聊天区域移除当前气泡"""
+        container = self.parent()
+        if not container or not isinstance(container, QWidget):
+            return
+
+        chat_area = container.parent()
+        if isinstance(chat_area, ChatAreaWidget):
+            # 从布局中移除容器
+            chat_area.layout().removeWidget(container)
+            # 从 bubble_containers 列表中移除
+            if container in chat_area.bubble_containers:
+                chat_area.bubble_containers.remove(container)
+            # 从 active_bubbles 中移除（如果存在）
+            chat_window = self.window()
+            if hasattr(chat_window, 'active_bubbles') and self.rowid in chat_window.active_bubbles:
+                del chat_window.active_bubbles[self.rowid]
+            # 删除容器及其子控件
+            container.deleteLater()
+            # 更新聊天区域
+            chat_area.update()
+            # 调整滚动条
+            if chat_window.chat_components.get('scroll'):
+                chat_window.adjust_scroll()
 
     def on_image_clicked(self, event) -> None:
         if event.button() != Qt.LeftButton or not self.file_id:
