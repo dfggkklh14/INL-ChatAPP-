@@ -3,12 +3,14 @@ import json
 import asyncio
 from dataclasses import dataclass
 from typing import Optional, Any, Tuple, List
+
+from PyQt5 import sip
 from PyQt5.QtCore import Qt, QSize, QRect, QPoint, pyqtSignal, QPropertyAnimation, QObject, QEvent
 from PyQt5.QtGui import QPainter, QFont, QFontMetrics, QPixmap, QImage, QIcon, QPainterPath, QColor
 from PyQt5.QtWidgets import (
     QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QPushButton, QApplication, QMessageBox, QMenu, QFileDialog, QSizePolicy, QProgressBar)
 
-from Interface_Controls import LIGHT_THEME, FONTS, StyleGenerator, resource_path, theme_manager
+from Interface_Controls import LIGHT_THEME, FONTS, StyleGenerator, resource_path, theme_manager, FloatingLabel
 
 
 class ChatAreaWidget(QWidget):
@@ -154,6 +156,8 @@ class ChatBubbleWidget(QWidget):
         if self.parent():
             self.parent().installEventFilter(self)
         self.installEventFilter(self)
+        theme_manager.register(self)
+        self._msg_box = None
 
     def _init_ui(self) -> None:
         self.font_message = QFont(FONTS['MESSAGE'])
@@ -775,10 +779,41 @@ class ChatBubbleWidget(QWidget):
             menu.exec_(self.mapToGlobal(pos))
 
     async def delete_message(self) -> None:
-        """删除当前消息"""
+        """删除当前消息，带有风格化确认弹窗，并使用 FloatingLabel 显示提示"""
         chat_window = self.window()
         if not hasattr(chat_window, 'client') or not self.rowid:
             QMessageBox.critical(self, "错误", "无法删除消息：客户端未初始化或消息ID缺失")
+            return
+
+        # 创建普通 QMessageBox
+        msg_box = QMessageBox(self)
+        self._msg_box = msg_box  # 保存引用以便 update_theme 使用
+        msg_box.setWindowTitle("确认删除")
+        msg_box.setText("您确定要删除这条消息吗？此操作无法撤销。")
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setDefaultButton(QMessageBox.No)
+
+        # 设置中文按钮并应用样式
+        yes_button = msg_box.button(QMessageBox.Yes)
+        yes_button.setFixedSize(30, 18)
+        no_button = msg_box.button(QMessageBox.No)
+        no_button.setFixedSize(30, 18)
+        yes_button.setText("是")
+        no_button.setText("否")
+
+        # 应用当前主题样式
+        t = theme_manager.current_theme
+        msg_box.setStyleSheet(f"QLabel {{ color: {t['dialog_text_color']}; }}")
+        StyleGenerator.apply_style(yes_button, "button", extra="border-radius: 5px;")
+        StyleGenerator.apply_style(no_button, "button", extra="border-radius: 5px;")
+
+        # 执行弹窗
+        reply = msg_box.exec_()
+
+        # 弹窗关闭后清除引用
+        self._msg_box = None
+
+        if reply == QMessageBox.No:
             return
 
         # 调用 ChatClient 的 delete_messages 方法
@@ -786,7 +821,16 @@ class ChatBubbleWidget(QWidget):
         if resp.get("status") == "success":
             # 删除成功，从界面移除气泡
             self.remove_from_chat_area()
-            QMessageBox.information(self, "提示", "消息已删除")
+            # 获取 ChatAreaWidget 作为父级
+            chat_area = chat_window.chat_components.get('area_widget')
+            if chat_area:
+                floating_label = FloatingLabel("消息已删除", chat_area)
+                floating_label.show()
+                floating_label.raise_()  # 确保显示在最上层
+                print(f"FloatingLabel created with parent: {chat_area}")
+            else:
+                print("ChatAreaWidget not found, falling back to QMessageBox")
+                QMessageBox.information(self, "提示", "消息已删除（无法显示浮动提示）")
         else:
             QMessageBox.critical(self, "错误", f"删除失败: {resp.get('message', '未知错误')}")
 
@@ -941,3 +985,8 @@ class ChatBubbleWidget(QWidget):
                 reply_preview = chat_window.generate_reply_preview(self.rowid)  # 复用生成逻辑
                 chat_window.chat_components['input'].show_reply_preview(self.rowid, reply_preview)
                 chat_window.chat_components['input'].text_edit.setFocus()
+
+    def update_theme(self, theme: dict) -> None:
+        """仅更新 QMessageBox 的文本颜色"""
+        if self._msg_box and not sip.isdeleted(self._msg_box):
+            self._msg_box.setStyleSheet(f"QLabel {{ color: {theme['dialog_text_color']}; }}")

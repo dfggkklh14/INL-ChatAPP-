@@ -48,7 +48,8 @@ LIGHT_THEME = {
     "MAIN_INTERFACE": "#f0f0f0",
     "title_bar_bg": "#f0f0f0",
     "title_bar_text": "#000000",
-    "input_background": "#ffffff"
+    "input_background": "#ffffff",
+    "dialog_text_color": "#000000"
 }
 
 DARK_THEME = {
@@ -72,7 +73,8 @@ DARK_THEME = {
     "MAIN_INTERFACE": "#222222",
     "title_bar_bg": "#222222",
     "title_bar_text": "#ffffff",
-    "input_background": "#1b1b1b"
+    "input_background": "#1b1b1b",
+    "dialog_text_color": "#ffffff"
 }
 
 
