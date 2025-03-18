@@ -297,19 +297,19 @@ class FloatingLabel(QLabel):
         super().__init__(text, parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.setWindowFlags(Qt.Widget)  # 保持作为子控件，确保位置正确
+        self.setWindowFlags(Qt.Widget)
 
-        # 设置样式
+        bg_color = theme_manager.current_theme['widget_bg']
+        font_color = theme_manager.current_theme['font_color']
         self.setStyleSheet(
-            f"background-color: {theme_manager.current_theme['widget_bg']}; "
+            f"background-color: {bg_color}; "
             "border-radius: 10px; "
-            f"color: {theme_manager.current_theme['font_color']}; "
+            f"color: {font_color}; "
             "padding: 8px;"
         )
         self.setFont(QFont("微软雅黑", 10))
         self.adjustSize()
 
-        # 设置透明度效果
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.opacity_effect.setOpacity(1.0)
         self.setGraphicsEffect(self.opacity_effect)
@@ -319,16 +319,26 @@ class FloatingLabel(QLabel):
             self.update_position()
             parent.installEventFilter(self)
 
+        self.show()
         QTimer.singleShot(1000, self.start_fade_out)
 
     def update_position(self):
         """更新位置到父窗口中心偏下"""
         if self.parent:
             parent_rect = self.parent.geometry()
-            self.move(
-                parent_rect.center().x() - self.width() // 2,
-                parent_rect.center().y() + parent_rect.height() // 3 - self.height() // 2
-            )
+            parent_width = parent_rect.width()
+            parent_height = parent_rect.height()
+            label_width = self.width()
+            label_height = self.height()
+
+            # 计算中心偏下位置
+            new_x = (parent_width - label_width) // 2
+            new_y = (parent_height // 2) + (parent_height // 3) - (label_height // 2)
+            # 确保不超出边界
+            new_x = max(0, min(new_x, parent_width - label_width))
+            new_y = max(0, min(new_y, parent_height - label_height))
+
+            self.move(new_x, new_y)
 
     def start_fade_out(self):
         """启动淡出动画，0.5秒内消失"""

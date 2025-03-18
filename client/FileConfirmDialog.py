@@ -98,6 +98,9 @@ class FileConfirmDialog(QDialog):
 
         self.popup = None
 
+        # 将焦点设置到输入框
+        self.text_edit.setFocus()
+
     def _update_content_width(self) -> None:
         """根据窗口宽度动态更新 CONTENT_WIDTH，最小值为 300"""
         if self.parent() and isinstance(self.parent(), QWidget):
