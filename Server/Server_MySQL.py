@@ -792,7 +792,7 @@ def delete_messages(request: dict, client_sock: socket.socket) -> dict:
 
             # 构建推送内容
             push_payload = {
-                "type": "messages_deleted",
+                "type": "deleted_messages",
                 "from": username,
                 "to": user2 if user1 == username else user1,
                 "deleted_rowids": [msg['id'] for msg in messages_to_delete],

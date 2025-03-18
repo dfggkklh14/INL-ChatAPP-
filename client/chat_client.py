@@ -174,7 +174,8 @@ class ChatClient:
                 req_id = resp.get("request_id")
                 if req_id in self.pending_requests:
                     self.pending_requests.pop(req_id).set_result(resp)
-                elif resp.get("type") in ["new_message", "new_media"] and (self.on_new_message_callback or self.on_new_media_callback):
+                elif resp.get("type") in ["new_message", "new_media"] and (
+                        self.on_new_message_callback or self.on_new_media_callback):
                     await self.parsing_new_message_or_media(resp)
                 elif resp.get("type") == "friend_list_update":
                     self.friends = resp.get("friends", [])
@@ -185,7 +186,18 @@ class ChatClient:
                 elif resp.get("type") == "Update_Remarks" and self.on_update_remarks_callback:
                     asyncio.create_task(self.on_update_remarks_callback(resp))
                 elif resp.get("type") == "messages_deleted" and self.on_conversations_update_callback:
-                    await self.parsing_delete_message(resp)
+                    await self.parsing_delete_message(resp)  # 保留原有逻辑，仅更新 friends
+                elif resp.get("type") == "deleted_messages" and self.on_conversations_update_callback:
+                    await self.parsing_delete_message(resp)  # 更新 friends
+                    # 添加气泡移除逻辑，不显示浮动提示
+                    if self.on_new_message_callback:  # 确保有 ChatWindow 实例
+                        chat_window = self._get_chat_window()
+                        if chat_window and chat_window.chat_components.get('chat'):
+                            deleted_rowids = resp.get("deleted_rowids", [])
+                            if deleted_rowids and chat_window.client.current_friend in [resp.get("from"),
+                                                                                        resp.get("to")]:
+                                await chat_window.chat_components['chat'].remove_bubbles_by_rowids(deleted_rowids,
+                                                                                                   show_floating_label=False)
             except Exception as e:
                 logging.error(f"读取推送消息失败: {e}")
                 if not self.is_running:

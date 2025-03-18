@@ -99,13 +99,12 @@ class ChatAreaWidget(QWidget):
             container.setStyleSheet(f"background-color: {chat_bg};")
         self.update()
 
-    async def remove_bubbles_by_rowids(self, deleted_rowids: List[int]) -> None:
-        """根据 rowids 移除对应的气泡"""
+    async def remove_bubbles_by_rowids(self, deleted_rowids: List[int], show_floating_label: bool = True) -> None:
         if not deleted_rowids:
             return
 
         removed = False
-        for container in self.bubble_containers[:]:  # 使用副本以避免修改时迭代问题
+        for container in self.bubble_containers[:]:
             for i in range(container.layout().count()):
                 widget = container.layout().itemAt(i).widget()
                 if isinstance(widget, ChatBubbleWidget) and widget.rowid in deleted_rowids:
@@ -122,10 +121,10 @@ class ChatAreaWidget(QWidget):
             chat_window = self.window()
             if hasattr(chat_window, 'adjust_scroll'):
                 chat_window.adjust_scroll()
-            # 显示浮动提示
-            floating_label = FloatingLabel("消息已删除", self)
-            floating_label.show()
-            floating_label.raise_()
+            if show_floating_label:  # 仅在 show_floating_label 为 True 时显示提示
+                floating_label = FloatingLabel("消息已删除", self)
+                floating_label.show()
+                floating_label.raise_()
 
 
 @dataclass
