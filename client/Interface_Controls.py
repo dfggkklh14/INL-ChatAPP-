@@ -428,28 +428,23 @@ class FriendItemWidget(QWidget):
         else:
             self.status_label.setPixmap(QPixmap())
 
-        # 恢复宽度判断
-        total_width = self.width()
-        if total_width < 110:
-            self.name_label.setVisible(False)
-        else:
-            self.name_label.setVisible(True)
-            self._adjust_name_font()
-
         self.name_label.setText(self.name)
         self.message_label.setText(self.last_message)
 
-        # 未读数或时间切换
         if self.unread > 0:
             self.badge_label.setPixmap(create_badge(self.unread))
             self.badge_label.setFixedSize(15, 15)
         else:
+            self.badge_label.clear()
             time_str = self.last_message_time.split(" ")[1][:5] if self.last_message_time else ""
             self.badge_label.setText(time_str)
             self.badge_label.setFont(QFont("微软雅黑", 8))
             self.badge_label.setFixedSize(40, 15)
             self.badge_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             StyleGenerator.apply_style(self.badge_label, "label")
+
+        self.badge_label.update()
+        self.update()
 
     def _adjust_name_font(self) -> None:
         font = FONTS['USERNAME']

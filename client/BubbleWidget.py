@@ -99,6 +99,34 @@ class ChatAreaWidget(QWidget):
             container.setStyleSheet(f"background-color: {chat_bg};")
         self.update()
 
+    async def remove_bubbles_by_rowids(self, deleted_rowids: List[int]) -> None:
+        """根据 rowids 移除对应的气泡"""
+        if not deleted_rowids:
+            return
+
+        removed = False
+        for container in self.bubble_containers[:]:  # 使用副本以避免修改时迭代问题
+            for i in range(container.layout().count()):
+                widget = container.layout().itemAt(i).widget()
+                if isinstance(widget, ChatBubbleWidget) and widget.rowid in deleted_rowids:
+                    container.layout().removeWidget(widget)
+                    widget.deleteLater()
+                    removed = True
+            if container.layout().count() == 0:
+                self.layout().removeWidget(container)
+                self.bubble_containers.remove(container)
+                container.deleteLater()
+
+        if removed:
+            self.update()
+            chat_window = self.window()
+            if hasattr(chat_window, 'adjust_scroll'):
+                chat_window.adjust_scroll()
+            # 显示浮动提示
+            floating_label = FloatingLabel("消息已删除", self)
+            floating_label.show()
+            floating_label.raise_()
+
 
 @dataclass
 class BubbleConfig:
@@ -816,21 +844,18 @@ class ChatBubbleWidget(QWidget):
         if reply == QMessageBox.No:
             return
 
-        # 调用 ChatClient 的 delete_messages 方法
         resp = await chat_window.client.delete_messages(self.rowid)
         if resp.get("status") == "success":
-            # 删除成功，从界面移除气泡
             self.remove_from_chat_area()
-            # 获取 ChatAreaWidget 作为父级
             chat_area = chat_window.chat_components.get('area_widget')
             if chat_area:
                 floating_label = FloatingLabel("消息已删除", chat_area)
                 floating_label.show()
-                floating_label.raise_()  # 确保显示在最上层
-                print(f"FloatingLabel created with parent: {chat_area}")
+                floating_label.raise_()
             else:
-                print("ChatAreaWidget not found, falling back to QMessageBox")
                 QMessageBox.information(self, "提示", "消息已删除（无法显示浮动提示）")
+            # 手动触发更新，确保在本地逻辑完成后执行
+            await chat_window.update_conversations(chat_window.client.friends)
         else:
             QMessageBox.critical(self, "错误", f"删除失败: {resp.get('message', '未知错误')}")
 

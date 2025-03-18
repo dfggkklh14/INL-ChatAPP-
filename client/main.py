@@ -189,8 +189,7 @@ class ChatWindow(QWidget):
         self.client = client
         self.main_app = main_app
         self.auto_scrolling = False
-        self.last_message_times: Dict[str, str] = {}
-        self.unread_messages: Dict[str, int] = {}
+        self.last_message_times: Dict[str, str] = {}  # 保留本地时间缓存，但从 friends 获取
         self.current_page = 1
         self.page_size = 20
         self.loading_history = False
@@ -688,7 +687,7 @@ class ChatWindow(QWidget):
     def on_scroll_button_clicked(self) -> None:
         self.adjust_scroll()
         if self.client.current_friend:
-            self.unread_messages[self.client.current_friend] = 0
+            self.client.clear_unread_messages(self.client.current_friend)  # 清零
             run_async(self.update_friend_list())
         self.scroll_to_bottom_btn.hide()
 
@@ -698,9 +697,9 @@ class ChatWindow(QWidget):
             run_async(self.load_chat_history(reset=False))
         self._check_scroll_position()
         if (self.client.current_friend and
-            self.unread_messages.get(self.client.current_friend, 0) > 0 and
+            self.client.unread_messages.get(self.client.current_friend, 0) > 0 and
             not self.auto_scrolling and sb.maximum() - value <= 5):
-            self.unread_messages[self.client.current_friend] = 0
+            self.client.clear_unread_messages(self.client.current_friend)  # 清零
             run_async(self.update_friend_list())
 
     def _scroll_to_bottom(self) -> None:
@@ -724,7 +723,7 @@ class ChatWindow(QWidget):
     def _check_scroll_position(self) -> None:
         sb = self.chat_components['scroll'].verticalScrollBar()
         should_show = (self.client.current_friend and
-                       self.unread_messages.get(self.client.current_friend, 0) > 0 and
+                       self.client.unread_messages.get(self.client.current_friend, 0) > 0 and  # 使用 client 的 unread_messages
                        sb.maximum() - sb.value() > 50)
         self._create_scroll_button(theme_manager.current_theme)
         if should_show:
@@ -841,15 +840,10 @@ class ChatWindow(QWidget):
             if received:
                 if self.should_scroll_to_bottom():
                     self.adjust_scroll()
-                    self.unread_messages[sender] = 0
-                else:
-                    self.unread_messages[sender] = self.unread_messages.get(sender, 0) + 1
-                    self._check_scroll_position()
-        else:
-            self.unread_messages[sender] = self.unread_messages.get(sender, 0) + 1
+                    self.client.clear_unread_messages(sender)
+                    await self.update_friend_list()
         if not self.isVisible() or self.isMinimized():
             self.show_notification(f"用户 {sender}:", msg)
-        await self.update_friend_list()
 
     def generate_reply_preview(self, reply_to: Optional[int]) -> Optional[str]:
         """根据 reply_to_id 从 active_bubbles 生成 reply_preview"""
@@ -894,7 +888,6 @@ class ChatWindow(QWidget):
             if bubble.rowid:
                 self.active_bubbles[bubble.rowid] = bubble
         else:
-        # 将 bubble_container 的定义和使用限制在 else 块内
             if bubble.parent():
                 self.chat_components['chat'].layout().removeWidget(bubble.parent())
                 bubble.parent().deleteLater()
@@ -933,7 +926,6 @@ class ChatWindow(QWidget):
             reply_to = getattr(self.client, 'reply_to_id', None)
             reply_preview = self.generate_reply_preview(reply_to)
 
-            # 创建所有气泡并立即移除回复预览
             bubbles = {}
             for file_path in file_paths:
                 file_type = self.client._detect_file_type(file_path)
@@ -952,14 +944,12 @@ class ChatWindow(QWidget):
             self.chat_components['input'].remove_reply_preview()
             self.adjust_scroll()
 
-            # 处理文件上传，传递 reply_to
             async def progress_callback(type_, progress, filename):
                 file_path = next((fp for fp in bubbles if os.path.basename(fp) == filename), None)
                 if file_path and type_ == "upload":
                     bubbles[file_path].update_progress(progress)
                     QApplication.processEvents()
 
-            # 修改：传递 reply_to 参数
             results = await self.client.send_multiple_media(
                 self.client.current_friend, file_paths, progress_callback, message=message, reply_to=reply_to
             )
@@ -970,7 +960,7 @@ class ChatWindow(QWidget):
                     bubble.duration = res.get("duration")
                     bubble.complete_progress()
                     bubble.rowid = res.get("rowid")
-                    bubble.reply_to = res.get("reply_to")  # 更新 reply_to
+                    bubble.reply_to = res.get("reply_to")
                     bubble.reply_preview = res.get("reply_preview") or reply_preview
                     if self.client._detect_file_type(file_path) == "image" and bubble.file_id:
                         self.image_list.insert(0, (bubble.file_id, bubble.original_file_name))
@@ -995,8 +985,6 @@ class ChatWindow(QWidget):
         rowid = res.get("rowid")
         reply_to = res.get("reply_to")
         reply_preview = res.get("reply_preview")
-
-        # 修改：无论消息类型如何，始终提取 message 字段
         msg = res.get("message", "")
 
         file_id = res.get("file_id")
@@ -1013,7 +1001,6 @@ class ChatWindow(QWidget):
             file_size_str = file_size
 
         self.last_message_times[sender] = wt
-        self.unread_messages[sender] = self.unread_messages.get(sender, 0) + 1
 
         if msg_type == "new_media" and file_type == "image" and file_id:
             image_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "images")
@@ -1032,53 +1019,52 @@ class ChatWindow(QWidget):
                 rowid=rowid, reply_to=reply_to, reply_preview=reply_preview
             )
             self.chat_components['chat'].addBubble(bubble)
-            # 添加到 active_bubbles
             if bubble.rowid:
                 self.active_bubbles[bubble.rowid] = bubble
             if self.should_scroll_to_bottom():
                 self.adjust_scroll()
-                self.unread_messages[sender] = 0
+                self.client.clear_unread_messages(sender)
+                await self.update_friend_list()
             else:
                 self._check_scroll_position()
 
         notification_msg = msg if msg_type == "new_message" else f"收到新的{file_type}: {original_file_name or '未知文件'}"
         if msg and msg_type == "new_media":
-            notification_msg += f"\n附加消息: {msg}"  # 如果有附加消息，也显示在通知中
+            notification_msg += f"\n附加消息: {msg}"
         self.show_notification(f"用户 {sender}:", notification_msg)
-        await self.update_friend_list()
 
     def _sort_friends(self, friends: List[dict]) -> List[dict]:
+        """根据最后消息时间排序好友，处理 conversations 为 None 的情况"""
         online = sorted(
-            [f for f in friends if f.get("online")],
-            key=lambda x: self.last_message_times.get(x["username"], "1970-01-01 00:00:00"), reverse=True
+            [f for f in friends if f and f.get("online")],
+            key=lambda x: x.get("conversations", {}).get("last_update_time", "1970-01-01 00:00:00") if x.get(
+                "conversations") else "1970-01-01 00:00:00",
+            reverse=True
         )
         offline = sorted(
-            [f for f in friends if not f.get("online")],
-            key=lambda x: self.last_message_times.get(x["username"], "1970-01-01 00:00:00"), reverse=True
+            [f for f in friends if f and not f.get("online")],
+            key=lambda x: x.get("conversations", {}).get("last_update_time", "1970-01-01 00:00:00") if x.get(
+                "conversations") else "1970-01-01 00:00:00",
+            reverse=True
         )
         return online + offline
 
-    async def update_conversations(self, conversations: dict) -> None:
-        """处理会话更新并刷新好友列表"""
-        await self.update_friend_list()
+    async def update_conversations(self, friends: List[dict], affected_users: Optional[List[str]] = None) -> None:
+        # 只读取传入的 friends，不直接访问 self.client.friends
+        if affected_users:
+            await self.update_friend_list(affected_users=affected_users)
+        else:
+            await self.update_friend_list(friends=friends)
 
-    async def update_friend_list(self, friends: Optional[List[dict]] = None) -> None:
-        """更新好友列表，确保正确更新有变化的项"""
+    async def update_friend_list(self, friends: Optional[List[dict]] = None,
+                                 affected_users: Optional[List[str]] = None) -> None:
         try:
-            friends = friends or self.client.friends
+            friends = friends or self.client.friends or []  # 确保 friends 不为 None
             current_friend = self.client.current_friend
-
-            # 规范化好友数据并检查是否变化
-            friend_hash = hashlib.md5(self._normalize_friends(friends).encode()).hexdigest()
-            if hasattr(self, "last_friend_hash") and self.last_friend_hash == friend_hash:
-                logging.debug("好友列表无变化，跳过更新")
-                return
-            self.last_friend_hash = friend_hash
 
             cache_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "avatars")
             os.makedirs(cache_dir, exist_ok=True)
 
-            # 构建现有项查找表
             existing_items = {}
             for i in range(self.friend_list.count()):
                 item = self.friend_list.item(i)
@@ -1086,25 +1072,24 @@ class ChatWindow(QWidget):
                 if widget and widget.username and not sip.isdeleted(widget):
                     existing_items[widget.username] = (item, widget)
 
-            # 对好友列表排序
-            sorted_friends = self._sort_friends(friends)
+            if affected_users:
+                for uname in affected_users:
+                    friend = next((f for f in friends if f and f.get("username") == uname), None)
+                    if not friend:
+                        logging.debug(f"受影响的好友 {uname} 未在好友列表中或为 None，跳过")
+                        continue
 
-            # 更新或添加好友项
-            for friend in sorted_friends:
-                if "username" not in friend:
-                    logging.debug(f"跳过无效的好友条目: {friend}")
-                    continue
+                    name = friend.get("name", uname)
+                    conv = friend.get("conversations")  # 允许为 None
+                    last_message = conv.get("content", "") if conv else ""  # 如果 conv 是 None，直接用空字符串
+                    last_message_time = conv.get("last_update_time", "") if conv else ""
+                    unread_count = self.client.unread_messages.get(uname, 0)
+                    online = friend.get("online", False)
+                    avatar_id = friend.get("avatar_id", "")
 
-                uname = friend["username"]
-                name = friend.get("name", uname)
-                last_message_time = self.client.conversation_times.get(uname, "") if hasattr(self.client,
-                                                                                             "conversation_times") else ""
-                unread_count = self.unread_messages.get(uname, 0)
-                online = friend.get("online", False)
-                avatar_id = friend.get("avatar_id", "")
-                last_message = self.client.get_last_message(uname)
+                    logging.debug(
+                        f"精准更新好友 {uname}: last_message={last_message}, last_message_time={last_message_time}, unread_count={unread_count}")
 
-                try:
                     if uname in existing_items:
                         item, widget = existing_items[uname]
                         needs_update = (
@@ -1116,13 +1101,59 @@ class ChatWindow(QWidget):
                                 widget.avatar_id != avatar_id
                         )
                         if needs_update:
-                            logging.debug(f"更新好友项 {uname}: "
-                                          f"name={widget.name}->{name}, "
-                                          f"online={widget.online}->{online}, "
-                                          f"unread={widget.unread}->{unread_count}, "
-                                          f"time={widget.last_message_time}->{last_message_time}, "
-                                          f"message={widget.last_message}->{last_message}, "
-                                          f"avatar_id={widget.avatar_id}->{avatar_id}")
+                            logging.debug(f"更新好友项 {uname}: unread 从 {widget.unread} 变为 {unread_count}")
+                            widget.name = name
+                            widget.online = online
+                            widget.unread = unread_count
+                            widget.last_message_time = last_message_time
+                            widget.last_message = last_message
+                            widget.avatar_id = avatar_id
+                            if widget.avatar_id != avatar_id or not widget.avatar_pixmap:
+                                await self._update_widget_avatar(widget, avatar_id, cache_dir)
+                            if not sip.isdeleted(widget):
+                                widget.update_display()
+                    else:
+                        item = QListWidgetItem(self.friend_list)
+                        item.setSizeHint(QSize(self.friend_list.width(), 55))
+                        widget = FriendItemWidget(uname, name, online, unread_count, None, last_message_time,
+                                                  last_message)
+                        widget.avatar_id = avatar_id
+                        await self._update_widget_avatar(widget, avatar_id, cache_dir)
+                        self.friend_list.setItemWidget(item, widget)
+                        theme_manager.register(widget)
+                        if not sip.isdeleted(widget):
+                            widget.update_display()
+                        logging.debug(f"添加新好友项: {uname}")
+            else:
+                sorted_friends = self._sort_friends(friends)
+                for friend in sorted_friends:
+                    if not friend or "username" not in friend:
+                        logging.debug(f"跳过无效的好友条目: {friend}")
+                        continue
+
+                    uname = friend["username"]
+                    name = friend.get("name", uname)
+                    conv = friend.get("conversations")  # 允许为 None
+                    last_message = conv.get("content", "") if conv else ""
+                    last_message_time = conv.get("last_update_time", "") if conv else ""
+                    unread_count = self.client.unread_messages.get(uname, 0)
+                    online = friend.get("online", False)
+                    avatar_id = friend.get("avatar_id", "")
+
+                    logging.debug(
+                        f"全量更新好友 {uname}: last_message={last_message}, last_message_time={last_message_time}, unread_count={unread_count}")
+
+                    if uname in existing_items:
+                        item, widget = existing_items[uname]
+                        needs_update = (
+                                widget.name != name or
+                                widget.online != online or
+                                widget.unread != unread_count or
+                                widget.last_message_time != last_message_time or
+                                widget.last_message != last_message or
+                                widget.avatar_id != avatar_id
+                        )
+                        if needs_update:
                             widget.name = name
                             widget.online = online
                             widget.unread = unread_count
@@ -1146,52 +1177,48 @@ class ChatWindow(QWidget):
                         if not sip.isdeleted(widget):
                             widget.update_display()
                         logging.debug(f"添加新好友项: {uname}")
-                except Exception as e:
-                    logging.error(f"处理好友 {uname} 时出错: {e}")
-                    continue
 
-            # 删除已不存在的好友项
-            for uname, (item, widget) in existing_items.items():
-                try:
-                    logging.debug(f"删除已不存在的好友项: {uname}")
-                    theme_manager.unregister(widget)
-                    self.friend_list.takeItem(self.friend_list.row(item))
-                    widget.deleteLater()
-                except Exception as e:
-                    logging.error(f"删除好友项 {uname} 失败: {e}")
+                for uname, (item, widget) in existing_items.items():
+                    try:
+                        logging.debug(f"删除已不存在的好友项: {uname}")
+                        theme_manager.unregister(widget)
+                        self.friend_list.takeItem(self.friend_list.row(item))
+                        widget.deleteLater()
+                    except Exception as e:
+                        logging.error(f"删除好友项 {uname} 失败: {e}")
 
-            # 更新当前选中好友状态
-            if current_friend:
-                for i in range(self.friend_list.count()):
-                    item = self.friend_list.item(i)
-                    widget = self.friend_list.itemWidget(item)
-                    if widget and widget.username == current_friend and not sip.isdeleted(widget):
-                        if not item.isSelected():
-                            item.setSelected(True)
-                        if (online_widget := self.chat_components.get('online')):
-                            online_status = any(
-                                f["username"] == current_friend and f.get("online", False) for f in friends)
-                            online_widget.update_status(current_friend, online_status)
-                        break
+                if current_friend:
+                    for i in range(self.friend_list.count()):
+                        item = self.friend_list.item(i)
+                        widget = self.friend_list.itemWidget(item)
+                        if widget and widget.username == current_friend and not sip.isdeleted(widget):
+                            if not item.isSelected():
+                                item.setSelected(True)
+                            if (online_widget := self.chat_components.get('online')):
+                                online_status = any(
+                                    f["username"] == current_friend and f.get("online", False) for f in friends if f)
+                                online_widget.update_status(current_friend, online_status)
+                            break
 
-            self.friend_list.updateGeometry()
-            logging.debug(f"好友列表更新完成，总数: {self.friend_list.count()}")
+                self.friend_list.updateGeometry()
+                logging.debug(f"好友列表更新完成，总数: {self.friend_list.count()}")
 
         except Exception as e:
             logging.error(f"更新好友列表时发生异常: {e}")
 
     def _normalize_friends(self, friends: List[dict]) -> str:
-        """规范化好友数据以计算一致的哈希值"""
+        """规范化好友数据以计算一致的哈希值，包括未读消息计数"""
         normalized = [
             {
                 "username": f.get("username"),
                 "name": f.get("name"),
                 "online": f.get("online"),
                 "avatar_id": f.get("avatar_id", ""),
-                "last_message": self.client.get_last_message(f.get("username", "")),
-                "last_message_time": self.client.conversation_times.get(f.get("username", ""), "") if hasattr(
-                    self.client, "conversation_times") else ""
-            } for f in friends if "username" in f
+                "last_message": f.get("conversations", {}).get("content", "") if f.get("conversations") else "",
+                "last_message_time": f.get("conversations", {}).get("last_update_time", "") if f.get(
+                    "conversations") else "",
+                "unread_count": self.client.unread_messages.get(f.get("username", ""), 0)
+            } for f in friends if f and "username" in f
         ]
         return json.dumps(normalized, sort_keys=True)
 
@@ -1312,8 +1339,10 @@ class ChatWindow(QWidget):
         self.chat_components['online'].update_status(friend, online_status)
         sb = self.chat_components['scroll'].verticalScrollBar()
         if sb.maximum() - sb.value() <= 5:
-            self.unread_messages[friend] = 0
-        # await self.update_friend_list()  # 注释掉无条件更新
+            old_unread = self.client.unread_messages.get(friend, 0)
+            self.client.clear_unread_messages(friend)
+            logging.debug(f"选择好友 {friend}，未读消息从 {old_unread} 清零")
+            await self.update_friend_list()  # 改为 await，确保同步更新
 
     def show_notification(self, sender: str, msg: str) -> None:
         self.notification_sender = sender.replace("用户 ", "").rstrip(":")

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # chat_client.py
+import copy
 import logging
 import os
 import socket
@@ -8,7 +9,6 @@ import time
 import uuid
 import asyncio
 import base64
-from io import BytesIO
 from typing import List, Optional, Callable
 
 from PyQt5.QtCore import QBuffer
@@ -21,6 +21,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
+
 def load_encryption_key():
     key = os.getenv("ENCRYPTION_KEY")
     if key:
@@ -32,8 +33,10 @@ def load_encryption_key():
     except Exception as e:
         raise ValueError("未能加载加密密钥。请设置 ENCRYPTION_KEY 环境变量或创建 secret.key 文件。") from e
 
+
 ENCRYPTION_KEY = load_encryption_key()
 fernet = Fernet(ENCRYPTION_KEY)
+
 
 class ChatClient:
     def __init__(self, host='26.102.137.22', port=13746):
@@ -45,12 +48,10 @@ class ChatClient:
         }
         self.is_running = True
         self.reader_task = None
-        self.friends = []
-        self.conversations = {}
-        self.conversation_times = {}
+        self.friends = []  # 包含所有好友信息和会话数据
+        self.unread_messages = {}  # 保留未读消息计数
         self.on_conversations_update_callback = None
         self._init_connection()
-        # 统一缓存目录，与 main.py 一致
         self.cache_root = os.path.join(os.path.dirname(__file__), "Chat_DATA")
         self.avatar_dir = os.path.join(self.cache_root, "avatars")
         self.thumbnail_dir = os.path.join(self.cache_root, "thumbnails")
@@ -160,7 +161,6 @@ class ChatClient:
         return friend_username
 
     async def start_reader(self):
-        """持续读取服务器推送的消息"""
         while True:
             try:
                 header = await self._recv_async(4)
@@ -174,9 +174,34 @@ class ChatClient:
                 req_id = resp.get("request_id")
                 if req_id in self.pending_requests:
                     self.pending_requests.pop(req_id).set_result(resp)
-                elif resp.get("type") == "new_message" and self.on_new_message_callback:
-                    asyncio.create_task(self.on_new_message_callback(resp))
-                elif resp.get("type") == "new_media" and self.on_new_media_callback:
+                elif resp.get("type") in ["new_message", "new_media"] and (self.on_new_message_callback or self.on_new_media_callback):
+                    await self.parsing_new_message_or_media(resp)
+                elif resp.get("type") == "friend_list_update":
+                    self.friends = resp.get("friends", [])
+                    if self.on_friend_list_update_callback:
+                        asyncio.create_task(self.on_friend_list_update_callback(self.friends))
+                    if self.on_conversations_update_callback:
+                        asyncio.create_task(self.on_conversations_update_callback(self.friends))
+                elif resp.get("type") == "Update_Remarks" and self.on_update_remarks_callback:
+                    asyncio.create_task(self.on_update_remarks_callback(resp))
+                elif resp.get("type") == "messages_deleted" and self.on_conversations_update_callback:
+                    await self.parsing_delete_message(resp)
+            except Exception as e:
+                logging.error(f"读取推送消息失败: {e}")
+                if not self.is_running:
+                    break
+                await asyncio.sleep(1)
+
+    async def parsing_new_message_or_media(self, resp: dict):
+        """解析并处理新消息或媒体通知，直接更新 self.friends"""
+        sender = resp.get("from", "")
+        if not sender:
+            return
+
+        # 查找并更新对应的好友项
+        for friend in self.friends:
+            if friend.get("username") == sender:
+                if resp.get("type") == "new_media":
                     if "thumbnail_path" in resp:
                         thumbnail_path = resp["thumbnail_path"]
                         file_id = os.path.basename(thumbnail_path)
@@ -184,63 +209,48 @@ class ChatClient:
                         if not os.path.exists(save_path):
                             await self.download_media(file_id, save_path)
                         resp["thumbnail_local_path"] = save_path
-                    asyncio.create_task(self.on_new_media_callback(resp))
-                elif resp.get("type") == "friend_list_update":
-                    logging.debug(f"收到好友列表更新: {resp}")
-                    self.friends = resp.get("friends", [])
-                    # 移除头像下载逻辑，仅更新好友列表
-                    if self.on_friend_list_update_callback:
-                        logging.debug("调用好友列表更新回调")
-                        asyncio.create_task(self.on_friend_list_update_callback(self.friends))
-                elif resp.get("type") == "Update_Remarks" and self.on_update_remarks_callback:
-                    asyncio.create_task(self.on_update_remarks_callback(resp))
-                elif resp.get("type") == "all_conversations_update" and self.on_conversations_update_callback:
-                    self.all_conversations_update(resp)
-                elif resp.get("type") == "last_message_update" and self.on_conversations_update_callback:
-                    self.last_message_update(resp)
-            except Exception as e:
-                logging.error(f"读取推送消息失败: {e}")
-                if not self.is_running:
-                    break  # 如果已关闭，直接退出循环
-                await asyncio.sleep(1)
+                    friend["conversations"] = {
+                        "sender": resp.get("from"),
+                        "content": resp.get("conversations", f"[{resp.get('file_type', '文件')}]"),
+                        "last_update_time": resp.get("write_time", "")
+                    }
+                else:  # 新消息
+                    friend["conversations"] = {
+                        "sender": resp.get("from"),
+                        "content": resp.get("message", ""),
+                        "last_update_time": resp.get("write_time", "")
+                    }
+                break
+        # 判断是否需要增加未读消息计数
+        should_increment_unread = True
+        if sender == self.current_friend and self.on_new_message_callback:
+            chat_window = self._get_chat_window()
+            if chat_window and chat_window.isVisible() and not chat_window.isMinimized():
+                scroll = chat_window.chat_components.get('scroll')
+                if scroll:
+                    sb = scroll.verticalScrollBar()
+                    if sb.maximum() - sb.value() <= 5:
+                        should_increment_unread = False
+        if should_increment_unread:
+            self.unread_messages[sender] = self.unread_messages.get(sender, 0) + 1
+        # 触发对话更新回调
+        if self.on_conversations_update_callback:
+            asyncio.create_task(self.on_conversations_update_callback(self.friends, affected_users=[sender]))
+        # 根据消息类型触发特定回调
+        if resp.get("type") == "new_message" and self.on_new_message_callback:
+            asyncio.create_task(self.on_new_message_callback(resp))
+        elif resp.get("type") == "new_media" and self.on_new_media_callback:
+            asyncio.create_task(self.on_new_media_callback(resp))
 
-    def get_last_message(self, friend_username: str) -> str:
-        return self.conversations.get(friend_username, "")
+    def _get_chat_window(self):
+        """辅助方法：获取 ChatWindow 实例"""
+        if hasattr(self.on_new_message_callback, '__self__'):
+            return self.on_new_message_callback.__self__
+        return None
 
-    def all_conversations_update(self, resp):
-        self.conversations.clear()
-        self.conversation_times.clear()
-        for conv in resp.get("conversations", []):
-            username = conv["username"]
-            friend = conv["friend"]
-            other_user = friend if username == self.username else username
-            last_message = conv.get("last_message", {})
-            msg_time = last_message.get("time", "")
-            self.conversations[other_user] = last_message.get("content", "")
-            self.conversation_times[other_user] = msg_time
-        asyncio.create_task(self.on_conversations_update_callback(self.conversations))
-
-    def last_message_update(self, resp):
-        msg_type = resp.get("msg_type")
-        message_type_map = {
-            "text": lambda conv: conv["last_message"]["content"],
-            "image": "[图片]",
-            "video": "[视频]",
-            "file": "[文件]"
-        }
-        if msg_type in message_type_map:
-            message = message_type_map[msg_type]
-            for conv in resp.get("conversations", []):
-                username = conv["username"]
-                friend = conv["friend"]
-                other_user = friend if username == self.username else username
-                if msg_type == "text":
-                    self.conversations[other_user] = message(conv)
-                else:
-                    self.conversations[other_user] = message
-                if msg_type == "text":
-                    self.conversation_times[other_user] = conv["last_message"]["time"]
-        asyncio.create_task(self.on_conversations_update_callback(self.conversations))
+    def clear_unread_messages(self, friend: str):
+        if friend in self.unread_messages:
+            self.unread_messages[friend] = 0
 
     async def get_user_info(self) -> dict:
         req = {
@@ -257,7 +267,8 @@ class ChatClient:
             resp["avatar_local_path"] = save_path
         return resp
 
-    async def _send_file_chunks(self, req: dict, file_path: str, progress_callback=None, chunk_size=1024 * 1024) -> dict:
+    async def _send_file_chunks(self, req: dict, file_path: str, progress_callback=None,
+                                chunk_size=1024 * 1024) -> dict:
         file_size = os.path.getsize(file_path)
         total_sent = 0
         with open(file_path, "rb") as f:
@@ -320,7 +331,14 @@ class ChatClient:
         }
         if reply_to is not None:
             req["reply_to"] = reply_to
-        return await self.send_request(req)
+        resp = await self.send_request(req)
+        if resp.get("status") == "success":
+            for friend in self.friends:
+                if friend.get("username") == to_user:
+                    friend["conversations"] = {"sender": self.username, "content": resp.get("conversations", message), "last_update_time": resp.get("write_time", "")}
+                    break
+            asyncio.create_task(self.on_conversations_update_callback(self.friends))
+        return resp
 
     async def send_media(self, to_user: str, file_path: str, file_type: str, reply_to: Optional[int] = None,
                          message: str = "", progress_callback=None) -> dict:
@@ -343,8 +361,14 @@ class ChatClient:
             final_req = req.copy()
             final_req["file_data"] = ""
             response = await self.send_request(final_req)
-            if response.get("status") == "success" and "text_message" in response:
-                response["message"] = response["text_message"]
+            if response.get("status") == "success":
+                if "text_message" in response:
+                    response["message"] = response["text_message"]
+                for friend in self.friends:
+                    if friend.get("username") == to_user:
+                        friend["conversations"] = {"sender": self.username, "content": response.get("conversations", f"[{file_type}]"), "last_update_time": response.get("write_time", "")}
+                        break
+                asyncio.create_task(self.on_conversations_update_callback(self.friends))
             return response
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -372,12 +396,23 @@ class ChatClient:
         else:
             return 'file'
 
+    async def parsing_delete_message(self, resp):
+        from_user = resp.get("from")
+        to_user = resp.get("to")
+        conversations = resp.get("conversations", "")
+        write_time = resp.get("write_time", "")
+        affected_users = []
+        for friend in self.friends:
+            if friend.get("username") == from_user:
+                friend["conversations"] = {"sender": from_user, "content": conversations, "last_update_time": write_time} if conversations else None
+                affected_users.append(from_user)
+            elif friend.get("username") == to_user:
+                friend["conversations"] = {"sender": to_user, "content": conversations, "last_update_time": write_time} if conversations else None
+                affected_users.append(to_user)
+        if affected_users:
+            asyncio.create_task(self.on_conversations_update_callback(self.friends, affected_users=affected_users))
+
     async def delete_messages(self, rowids: int | List[int]) -> dict:
-        """
-        删除消息（支持单条或批量删除）
-        :param rowids: 要删除的消息的rowid（整数）或rowid列表
-        :return: 服务器响应字典
-        """
         if not self.is_authenticated:
             return {"status": "error", "message": "未登录，无法删除消息"}
 
@@ -386,8 +421,6 @@ class ChatClient:
             "username": self.username,
             "request_id": str(uuid.uuid4())
         }
-
-        # 根据输入类型设置请求字段
         if isinstance(rowids, int):
             req["rowid"] = rowids
         elif isinstance(rowids, list):
@@ -397,7 +430,19 @@ class ChatClient:
         else:
             return {"status": "error", "message": "rowids 参数必须是整数或整数列表"}
 
-        return await self.send_request(req)
+        resp = await self.send_request(req)
+        if resp.get("status") == "success" and self.current_friend:
+            # 保留对 self.friends 的更新
+            for friend in self.friends:
+                if friend.get("username") == self.current_friend:
+                    friend["conversations"] = {
+                        "sender": self.username,
+                        "content": resp.get("conversations", ""),
+                        "last_update_time": resp.get("write_time", "")
+                    } if resp.get("conversations") else None
+                    break
+            # 不触发回调，交给调用方处理
+        return resp
 
     async def upload_avatar(self, avatar: QPixmap) -> dict:
         buffer = QBuffer()

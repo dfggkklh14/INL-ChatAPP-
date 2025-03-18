@@ -333,8 +333,9 @@ def update_friend_remarks(request: dict, client_sock: socket.socket) -> dict:
     logging.debug(f"更新备注返回响应: {response}")
     return response
 
+
 def push_friends_list(username: str):
-    """推送好友列表"""
+    """推送好友列表并在每个好友项中包含会话数据，去掉重复的 time 字段"""
     conn = get_db_connection()
     if not conn:
         logging.error("数据库连接失败，无法推送好友列表")
@@ -344,6 +345,7 @@ def push_friends_list(username: str):
         cursor.execute("SELECT f.friend, f.Remarks FROM friends f WHERE f.username = %s", (username,))
         friend_rows = cursor.fetchall()
         friends = []
+
         for row in friend_rows:
             friend_username = row['friend']
             remarks = row['Remarks']
@@ -353,13 +355,41 @@ def push_friends_list(username: str):
             name = user_info['names'] if user_info and user_info['names'] else friend_username
             sign = user_info['signs'] if user_info and user_info['signs'] else ""
             display_name = remarks if remarks else name
-            friends.append({
+
+            # 获取该好友的最后会话消息
+            last_message_data = None
+            with conversations_lock:
+                sorted_key = tuple(sorted([username, friend_username]))
+                convo_data = conversations.get(sorted_key)
+                if convo_data:
+                    last_message = convo_data["last_message"]
+                    # 根据消息类型设置 content
+                    if last_message["attachment_type"] == "file":
+                        content = "[文件]"
+                    elif last_message["attachment_type"] == "image":
+                        content = "[图片]"
+                    elif last_message["attachment_type"] == "video":
+                        content = "[视频]"
+                    else:
+                        content = last_message["message"]
+
+                    last_message_data = {
+                        "sender": last_message["sender"],
+                        "content": content,
+                        "last_update_time": convo_data['last_update_time'].strftime('%Y-%m-%d %H:%M:%S')
+                    }
+
+            # 构建好友项，直接包含会话数据
+            friend_item = {
                 "username": friend_username,
                 "avatar_id": avatar_id,
                 "name": display_name,
                 "sign": sign,
-                "online": friend_username in clients
-            })
+                "online": friend_username in clients,
+                "conversations": last_message_data  # 如果没有会话，则为 None
+            }
+            friends.append(friend_item)
+
     except Exception as e:
         logging.error(f"获取好友列表失败: {e}")
         return
@@ -368,51 +398,16 @@ def push_friends_list(username: str):
 
     with clients_lock:
         if username in clients:
-            response = {"type": "friend_list_update", "status": "success", "friends": friends}
+            response = {
+                "type": "friend_list_update",
+                "status": "success",
+                "friends": friends
+            }
             try:
                 send_response(clients[username], response)
                 logging.debug(f"推送好友列表给 {username}: {response}")
             except Exception as e:
                 logging.error(f"推送好友列表给 {username} 失败: {e}")
-
-
-def push_all_conversations(logged_in_user: str):
-    """推送用户的所有会话数据"""
-    conversations_list = []
-    with conversations_lock:
-        for (user1, user2), data in conversations.items():
-            if user1 == logged_in_user or user2 == logged_in_user:
-                last_message = data["last_message"]
-                # 根据消息类型设置 content
-                if last_message["attachment_type"] == "file":
-                    content = "[文件]"
-                elif last_message["attachment_type"] == "image":
-                    content = "[图片]"
-                elif last_message["attachment_type"] == "video":
-                    content = "[视频]"
-                else:
-                    content = last_message["message"]
-
-                simplified_msg = {
-                    "time": last_message["write_time"],
-                    "sender": last_message["sender"],
-                    "content": content
-                }
-                conversations_list.append({
-                    "username": user1,
-                    "friend": user2,
-                    "last_message": simplified_msg,
-                    "last_update_time": data['last_update_time'].strftime('%Y-%m-%d %H:%M:%S')
-                })
-    conversations_list.sort(key=lambda x: x["last_update_time"], reverse=True)
-    payload = {
-        "type": "all_conversations_update",
-        "conversations": conversations_list,
-    }
-    with clients_lock:
-        if logged_in_user in clients:
-            send_response(clients[logged_in_user], payload)
-            logging.debug(f"推送所有会话给 {logged_in_user}: {payload}")
 
 def push_friends_update(username: str):
     """推送好友更新"""
@@ -484,7 +479,7 @@ def send_message(request: dict, client_sock: socket.socket) -> dict:
         return {"type": "send_message", "status": "error", "message": "数据库连接失败", "request_id": request_id}
     try:
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(''' 
             INSERT INTO messages (sender, receiver, message, write_time, reply_to, reply_preview)
             VALUES (%s, %s, %s, %s, %s, %s)
         ''', (from_user, to_user, message, current_time, reply_to, reply_preview))
@@ -504,6 +499,10 @@ def send_message(request: dict, client_sock: socket.socket) -> dict:
         }
         update_conversation_last_message(from_user, to_user, last_message)
 
+        # conversations 直接使用 message 作为值
+        conversations = message
+
+        # 推送消息给接收者
         push_response = {
             "type": "new_message",
             "from": from_user,
@@ -512,13 +511,24 @@ def send_message(request: dict, client_sock: socket.socket) -> dict:
             "write_time": current_time,
             "reply_to": reply_to,
             "reply_preview": reply_preview,
-            "rowid": rowid
+            "rowid": rowid,
+            "conversations": conversations
         }
         with clients_lock:
             if to_user in clients:
                 send_response(clients[to_user], push_response)
 
-        return {"type": "send_message", "status": "success", "message": f"消息已发送给 {to_user}", "request_id": request_id, "rowid": rowid, "reply_to": reply_to, "reply_preview": reply_preview}
+        # 返回给发送者的响应
+        return {
+            "type": "send_message",
+            "status": "success",
+            "message": f"消息已发送给 {to_user}",
+            "request_id": request_id,
+            "rowid": rowid,
+            "reply_to": reply_to,
+            "reply_preview": reply_preview,
+            "conversations": conversations
+        }
     except Error as e:
         logging.error(f"发送消息失败: {e}")
         return {"type": "send_message", "status": "error", "message": "消息发送失败", "request_id": request_id}
@@ -571,7 +581,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
     else:
         file_size = session["received_size"]
         thumbnail_path = ""
-        duration = 0  # 直接设为 0，去掉所有帧率计算
+        duration = 0
 
         if not os.path.exists(file_path):
             logging.error(f"文件未找到: {file_path}")
@@ -589,7 +599,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                     logging.error(f"缩略图文件未生成: {thumbnail_path}")
             except Exception as e:
                 logging.error(f"生成图片缩略图失败: {e}, 文件路径: {file_path}")
-                thumbnail_path = ""  # 失败时置为空
+                thumbnail_path = ""
         elif file_type == "video":
             try:
                 reader = imageio.get_reader(file_path)
@@ -599,9 +609,8 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 thumbnail_filename = f"thumb_{unique_file_name}.jpg"
                 thumbnail_path = os.path.join(upload_dir, thumbnail_filename)
                 thumb_image.save(thumbnail_path, "JPEG")
-                # 用 moviepy 拿时长
                 video = VideoFileClip(file_path)
-                duration = video.duration  # 直接秒数，不用帧率
+                duration = video.duration
                 video.close()
                 reader.close()
                 logging.debug(f"生成视频缩略图: {thumbnail_path}, 时长: {duration}秒")
@@ -610,7 +619,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
             except Exception as e:
                 logging.error(f"生成视频缩略图失败: {e}, 文件路径: {file_path}")
                 thumbnail_path = ""
-                duration = 0  # 出错设为 0
+                duration = 0
 
         reply_preview = None
         if reply_to:
@@ -630,7 +639,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                           f"write_time={current_time}, attachment_type={file_type}, attachment_path={file_path}, "
                           f"original_file_name={original_file_name}, thumbnail_path={thumbnail_path}, "
                           f"file_size={file_size}, duration={duration}, reply_to={reply_to}, reply_preview={reply_preview}")
-            cursor.execute('''
+            cursor.execute(''' 
                 INSERT INTO messages (sender, receiver, message, write_time, attachment_type, attachment_path, 
                                       original_file_name, thumbnail_path, file_size, duration, reply_to, reply_preview)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -651,6 +660,17 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
             }
             update_conversation_last_message(from_user, to_user, last_message)
 
+            # 根据文件类型设置 conversations
+            if file_type == "file":
+                conversations = "[文件]"
+            elif file_type == "image":
+                conversations = "[图片]"
+            elif file_type == "video":
+                conversations = "[视频]"
+            else:
+                conversations = message  # 默认使用 message
+
+            # 推送消息给接收者
             push_payload = {
                 "type": "new_media",
                 "status": "success",
@@ -665,7 +685,8 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 "duration": duration,
                 "reply_to": reply_to,
                 "reply_preview": reply_preview,
-                "rowid": rowid
+                "rowid": rowid,
+                "conversations": conversations
             }
             if thumbnail_path and os.path.exists(thumbnail_path):
                 push_payload["thumbnail_path"] = thumbnail_path
@@ -676,146 +697,130 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 if to_user in clients:
                     send_response(clients[to_user], push_payload)
 
+            # 返回给发送者的响应
             del upload_sessions[request_id]
-            return {"type": "send_media", "status": "success", "message": f"{file_type} 已发送给 {to_user}", "request_id": request_id, "file_id": unique_file_name, "write_time": current_time, "duration": duration, "rowid": rowid, "reply_to": reply_to, "reply_preview": reply_preview, "text_message": message}
+            return {
+                "type": "send_media",
+                "status": "success",
+                "message": f"{file_type} 已发送给 {to_user}",
+                "request_id": request_id,
+                "file_id": unique_file_name,
+                "write_time": current_time,
+                "duration": duration,
+                "rowid": rowid,
+                "reply_to": reply_to,
+                "reply_preview": reply_preview,
+                "text_message": message,
+                "conversations": conversations
+            }
         except Error as e:
             logging.error(f"保存媒体消息失败: {e}")
             return {"type": "send_media", "status": "error", "message": "保存失败", "request_id": request_id}
         finally:
             conn.close()
 
+
 def delete_messages(request: dict, client_sock: socket.socket) -> dict:
     """删除消息（支持单条和批量删除）"""
     username = request.get("username")
-    rowids = request.get("rowids", [])  # 批量删除的消息 ID 列表
-    rowid = request.get("rowid")  # 单条删除的消息 ID
+    rowids = request.get("rowids", []) if request.get("rowids") else [request.get("rowid")] if request.get("rowid") else []
     request_id = request.get("request_id")
 
-    target_rowids = rowids if rowids else ([rowid] if rowid else [])
-    if not target_rowids:
-        return {"type": "delete_messages", "status": "error", "message": "未指定要删除的消息", "request_id": request_id}
+    if not rowids:
+        return {"type": "messages_deleted", "status": "error", "message": "未指定要删除的消息", "request_id": request_id}
 
     conn = get_db_connection()
     if not conn:
-        return {"type": "delete_messages", "status": "error", "message": "数据库连接失败", "request_id": request_id}
+        return {"type": "messages_deleted", "status": "error", "message": "数据库连接失败", "request_id": request_id}
 
     try:
         cursor = conn.cursor(dictionary=True)
-
-        # 检查消息是否属于该用户
-        cursor.execute('''
-            SELECT id, sender, receiver
-            FROM messages
-            WHERE id IN (%s) AND (sender = %s OR receiver = %s)
-        ''' % (','.join(['%s'] * len(target_rowids)), '%s', '%s'), tuple(target_rowids + [username, username]))
+        # 检查权限并获取消息
+        cursor.execute('''SELECT id, sender, receiver FROM messages WHERE id IN (%s) AND (sender = %s OR receiver = %s)'''
+                       % (','.join(['%s'] * len(rowids)), '%s', '%s'), tuple(rowids + [username, username]))
         messages_to_delete = cursor.fetchall()
         if not messages_to_delete:
-            return {"type": "delete_messages", "status": "error", "message": "消息不存在或无权限删除", "request_id": request_id}
+            return {"type": "messages_deleted", "status": "error", "message": "消息不存在或无权限", "request_id": request_id}
 
-        # 第一步：清理 conversations 中引用将被删除消息的记录
-        cursor.execute('''
-            DELETE FROM conversations
-            WHERE lastmessageid IN (%s)
-        ''' % ','.join(['%s'] * len(target_rowids)), tuple(target_rowids))
+        # 删除相关记录
+        cursor.execute('DELETE FROM conversations WHERE lastmessageid IN (%s)' % ','.join(['%s'] * len(rowids)), tuple(rowids))
+        cursor.execute('DELETE FROM messages WHERE id IN (%s)' % ','.join(['%s'] * len(rowids)), tuple(rowids))
         conn.commit()
 
-        # 第二步：删除 messages 中的记录
-        cursor.execute('DELETE FROM messages WHERE id IN (%s)' % ','.join(['%s'] * len(target_rowids)), tuple(target_rowids))
-        conn.commit()
-
-        # 第三步：更新受影响的会话（可选）
+        # 更新会话并获取最新状态
         affected_pairs = {tuple(sorted([msg['sender'], msg['receiver']])) for msg in messages_to_delete}
-        for username, friend in affected_pairs:
-            cursor.execute('''
-                SELECT id, sender, receiver, message, write_time, attachment_type, original_file_name, reply_to, reply_preview
-                FROM messages
-                WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
-                ORDER BY write_time DESC, id DESC
-                LIMIT 1
-            ''', (username, friend, friend, username))
-            latest_message = cursor.fetchone()
-
-            with conversations_lock:
-                sorted_key = (username, friend)
-                if latest_message:
-                    last_message = {
-                        "rowid": latest_message['id'],
-                        "sender": latest_message['sender'],
-                        "receiver": latest_message['receiver'],
-                        "message": latest_message['message'],
-                        "write_time": latest_message['write_time'].strftime('%Y-%m-%d %H:%M:%S'),
-                        "attachment_type": latest_message['attachment_type'],
-                        "original_file_name": latest_message['original_file_name'],
-                        "reply_to": latest_message['reply_to'],
-                        "reply_preview": latest_message['reply_preview']
-                    }
-                    conversations[sorted_key] = {
-                        "last_message": last_message,
-                        "last_update_time": latest_message['write_time']
-                    }
-                    cursor.execute('''
-                        INSERT INTO conversations (username, friend, lastmessageid, lastupdatetime)
-                        VALUES (%s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE lastmessageid = %s, lastupdatetime = %s
-                    ''', (username, friend, latest_message['id'], latest_message['write_time'],
-                          latest_message['id'], latest_message['write_time']))
-                else:
+        conversations_content = ""
+        write_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # 默认删除时间
+        for user1, user2 in affected_pairs:
+            # 获取最新消息
+            cursor.execute('''SELECT id, sender, receiver, message, write_time, attachment_type, original_file_name, 
+                            reply_to, reply_preview FROM messages 
+                            WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s) 
+                            ORDER BY write_time DESC LIMIT 1''', (user1, user2, user2, user1))
+            latest_msg = cursor.fetchone()
+            if latest_msg:
+                conversations_content = "[文件]" if latest_msg['attachment_type'] == "file" else \
+                                      "[图片]" if latest_msg['attachment_type'] == "image" else \
+                                      "[视频]" if latest_msg['attachment_type'] == "video" else \
+                                      latest_msg['message'] or ""
+                write_time = latest_msg['write_time'].strftime('%Y-%m-%d %H:%M:%S')
+                last_message = {
+                    "rowid": latest_msg['id'],
+                    "sender": latest_msg['sender'],
+                    "receiver": latest_msg['receiver'],
+                    "message": latest_msg['message'],
+                    "write_time": write_time,
+                    "attachment_type": latest_msg['attachment_type'],
+                    "original_file_name": latest_msg['original_file_name'],
+                    "reply_to": latest_msg['reply_to'],
+                    "reply_preview": latest_msg['reply_preview']
+                }
+                update_conversation_last_message(user1, user2, last_message)
+            else:
+                conversations_content = ""
+                write_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                # 会话清空时，更新 conversations 表为 NULL
+                with conversations_lock:
+                    sorted_key = tuple(sorted([user1, user2]))
                     if sorted_key in conversations:
                         del conversations[sorted_key]
-            conn.commit()
+                cursor.execute('''INSERT INTO conversations (username, friend, lastmessageid, lastupdatetime)
+                                VALUES (%s, %s, NULL, %s)
+                                ON DUPLICATE KEY UPDATE lastmessageid = NULL, lastupdatetime = %s''',
+                               (user1, user2, write_time, write_time))
+                conn.commit()
 
-            # 推送会话更新
-            if latest_message:
-                simplified_msg = {
-                    "time": last_message["write_time"],
-                    "sender": last_message["sender"],
-                    "content": last_message["message"] if not last_message["attachment_type"] else f"[{last_message['attachment_type']}]"
-                }
-                payload = {
-                    "type": "last_message_update",
-                    "msg_type": last_message["attachment_type"] if last_message["attachment_type"] else "text",
-                    "conversations": [{
-                        "username": username,
-                        "friend": friend,
-                        "last_message": simplified_msg,
-                        "last_update_time": latest_message['write_time'].strftime('%Y-%m-%d %H:%M:%S')
-                    }]
-                }
-                with clients_lock:
-                    for user in [username, friend]:
-                        if user in clients:
-                            send_response(clients[user], payload)
-                            logging.debug(f"推送会话更新给 {user}: {payload}")
+            # 构建推送内容
+            push_payload = {
+                "type": "messages_deleted",
+                "from": username,
+                "to": user2 if user1 == username else user1,
+                "deleted_rowids": [msg['id'] for msg in messages_to_delete],
+                "conversations": conversations_content,
+                "write_time": write_time
+            }
+            # 推送给会话另一方
+            other_user = user2 if user1 == username else user1
+            with clients_lock:
+                if other_user in clients and other_user != username:
+                    send_response(clients[other_user], push_payload)
 
-        # 返回成功响应
-        response = {
-            "type": "delete_messages",
+        return_data = {
+            "type": "messages_deleted",
             "status": "success",
             "message": f"成功删除 {len(messages_to_delete)} 条消息",
             "request_id": request_id,
-            "deleted_rowids": [msg['id'] for msg in messages_to_delete]
+            "deleted_rowids": [msg['id'] for msg in messages_to_delete],
+            "conversations": conversations_content,
+            "write_time": write_time
         }
-
-        # 推送删除通知
-        notified_users = set()
-        for msg in messages_to_delete:
-            sender, receiver = msg['sender'], msg['receiver']
-            with clients_lock:
-                if receiver in clients and receiver != username and receiver not in notified_users:
-                    delete_notify = {
-                        "type": "messages_deleted",
-                        "deleted_rowids": [msg['id'] for msg in messages_to_delete],
-                        "from_user": username,
-                        "to_user": receiver
-                    }
-                    send_response(clients[receiver], delete_notify)
-                    notified_users.add(receiver)
-
-        return response
+        # 返回响应
+        logging.debug(f"delete_message返回:{return_data}\ndelete_message推送:{push_payload}")
+        return return_data
 
     except Error as e:
         logging.error(f"删除消息失败: {e}")
-        return {"type": "delete_messages", "status": "error", "message": "删除消息失败", "request_id": request_id}
+        return {"type": "messages_deleted", "status": "error", "message": "删除消息失败", "request_id": request_id}
     finally:
         conn.close()
 
@@ -839,46 +844,26 @@ def get_conversations(request: dict, client_sock: socket.socket) -> dict:
     return response
 
 def update_conversation_last_message(username: str, friend: str, message: dict):
-    """更新会话的最后消息"""
+    """更新会话的最后消息，不推送任何消息"""
     sorted_key = tuple(sorted([username, friend]))
-    now = datetime.now()
+    write_time = message['write_time']  # 使用消息的 write_time
     with conversations_lock:
-        conversations[sorted_key] = {'last_message': message, 'last_update_time': now}
+        conversations[sorted_key] = {'last_message': message, 'last_update_time': datetime.strptime(write_time, '%Y-%m-%d %H:%M:%S')}
     conn = get_db_connection()
     if conn:
         try:
             cursor = conn.cursor()
-            cursor.execute('''
+            cursor.execute(''' 
                 INSERT INTO conversations (username, friend, lastmessageid, lastupdatetime)
                 VALUES (%s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE lastmessageid = %s, lastupdatetime = %s
-            ''', (sorted_key[0], sorted_key[1], message['rowid'], now, message['rowid'], now))
+            ''', (sorted_key[0], sorted_key[1], message['rowid'], write_time, message['rowid'], write_time))
             conn.commit()
             logging.debug(f"会话 {username}-{friend} 已立即同步到数据库")
         except Error as e:
             logging.error(f"同步会话 {username}-{friend} 到数据库失败: {e}")
         finally:
             conn.close()
-    simplified_msg = {
-        "time": message["write_time"],
-        "sender": message["sender"],
-        "content": message["message"],
-    }
-    payload = {
-        "type": "last_message_update",
-        "msg_type": message["attachment_type"] if message["attachment_type"] else "text",
-        "conversations": [{
-            "username": sorted_key[0],
-            "friend": sorted_key[1],
-            "last_message": simplified_msg,
-            "last_update_time": now.strftime('%Y-%m-%d %H:%M:%S')
-        }]
-    }
-    with clients_lock:
-        for user in [username, friend]:
-            if user in clients:
-                send_response(clients[user], payload)
-                logging.debug(f"推送最后消息更新给 {user}: {payload}")
 
 
 def get_chat_history_paginated(request: dict, client_sock: socket.socket) -> dict:
@@ -996,7 +981,6 @@ def handle_client(client_sock: socket.socket, client_addr):
                 if response.get("status") == "success":
                     logged_in_user = request.get("username")
                     push_friends_update(logged_in_user)
-                    push_all_conversations(logged_in_user)
                 continue
             elif req_type == "send_message":
                 response = send_message(request, client_sock)
