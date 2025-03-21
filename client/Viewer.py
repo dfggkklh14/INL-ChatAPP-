@@ -8,8 +8,7 @@ from PyQt5.QtGui import QPainter, QColor, QPixmap
 from PyQt5.QtWidgets import QLabel, QWidget, QSizePolicy, QVBoxLayout, QPushButton, QFileDialog, QApplication, \
     QMessageBox, QMenu
 
-from Interface_Controls import StyleGenerator
-
+from Interface_Controls import StyleGenerator, FloatingLabel
 
 LOADING_TEXT = '<span style="color: white; font-family: Microsoft YaHei; font-size: 10pt;">加载中...</span>'
 
@@ -224,33 +223,30 @@ class ImageViewer(QWidget):
         self.original_pixmap = QPixmap()
         self.image_label.setPixmap(QPixmap())
         file_id, original_file_name = self.image_list[self.current_index]
-        image_dir = os.path.join(os.getcwd(), "Chat_DATA", "images")
+        client = self.window().client
+        image_dir = os.path.join(client.cache_root, "images")  # 使用 chat_client.py 的 cache_root
         os.makedirs(image_dir, exist_ok=True)
-        save_path = os.path.join(image_dir, original_file_name or f"{file_id}.jpg")
+        save_path = os.path.join(image_dir, original_file_name or file_id)  # 不强制加 .jpg
 
         try:
-            chat_window = self.window()
-            if hasattr(chat_window, 'client'):
-                result = await chat_window.client.download_media(file_id, save_path)
-                if result.get("status") == "success" and os.path.exists(save_path):
-                    self.original_pixmap = QPixmap(save_path)
-                    if not self.original_pixmap.isNull() and self.original_pixmap.height() > 0:
-                        # 初次加载时，重置 scale_factor 为适合视口的比例
-                        viewport = self.image_label.size()
-                        orig_width = self.original_pixmap.width()
-                        orig_height = self.original_pixmap.height()
-                        longest_side = max(orig_width, orig_height)
-                        self.scale_factor = (viewport.width() / orig_width if longest_side == orig_width
-                                           else viewport.height() / orig_height)
-                        self.update_image()
-                    else:
-                        self.image_label.setText("图片加载失败")
-                        self.original_pixmap = QPixmap()
-                else:
+            if not os.path.exists(save_path):  # 检查缓存，避免重复下载
+                result = await client.download_media(file_id, save_path, "image")
+                if result.get("status") != "success":
                     self.image_label.setText("图片加载失败")
                     self.original_pixmap = QPixmap()
+                    return
+            self.original_pixmap = QPixmap(save_path)
+            if not self.original_pixmap.isNull() and self.original_pixmap.height() > 0:
+                viewport = self.image_label.size()
+                orig_width = self.original_pixmap.width()
+                orig_height = self.original_pixmap.height()
+                longest_side = max(orig_width, orig_height)
+                self.scale_factor = (viewport.width() / orig_width if longest_side == orig_width
+                                     else viewport.height() / orig_height)
+                self.update_image()
             else:
-                self.image_label.setText("无法连接到服务器")
+                self.image_label.setText("图片加载失败")
+                self.original_pixmap = QPixmap()
         except Exception as e:
             self.image_label.setText(f"加载错误: {str(e)}")
             self.original_pixmap = QPixmap()
@@ -335,7 +331,10 @@ class ImageViewer(QWidget):
         if not self.original_pixmap.isNull():
             clipboard = QApplication.clipboard()
             clipboard.setPixmap(self.original_pixmap)
-            QMessageBox.information(self, "成功", "图片已复制到剪贴板")
+            # 使用 FloatingLabel 显示提示
+            floating_label = FloatingLabel("图片已复制到剪贴板", self)
+            floating_label.show()
+            floating_label.raise_()
 
     def download_image(self) -> None:
         """下载当前图片到本地"""

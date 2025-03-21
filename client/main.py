@@ -22,8 +22,8 @@ from qasync import QEventLoop
 
 from chat_client import ChatClient
 from Interface_Controls import (FriendItemWidget, OnLine, theme_manager, StyleGenerator, generate_thumbnail,
-                                FloatingLabel)
-from BubbleWidget import ChatAreaWidget, ChatBubbleWidget
+                                FloatingLabel, run_async)
+from BubbleWidget import ChatAreaWidget, ChatBubbleWidget, create_confirmation_dialog
 from FileConfirmDialog import FileConfirmDialog
 from MessageInput import MessageInput
 from Viewer import ImageViewer
@@ -83,9 +83,6 @@ def create_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode
     le.setValidator(QRegularExpressionValidator(regex, le))
     return le
 
-def run_async(coro) -> None:
-    asyncio.create_task(coro)
-
 # 登录窗口
 class LoginWindow(QDialog):
     def __init__(self, main_app: "ChatApp") -> None:
@@ -126,14 +123,12 @@ class LoginWindow(QDialog):
         res = await self.chat_client.authenticate(username, password)
         if res == "认证成功":
             self.accept()
+            asyncio.create_task(self.chat_client._process_callback_queue())
             run_async(self.chat_client.start_reader())
             if not self.main_app.chat_window:
                 self.main_app.chat_window = ChatWindow(self.chat_client, self.main_app)
-            # 检查是否已绑定，避免重复
             if not self.chat_client.on_friend_list_update_callback:
                 self.chat_client.on_friend_list_update_callback = self.main_app.chat_window.update_friend_list
-            self.chat_client.on_new_message_callback = self.main_app.chat_window.handle_new_message
-            self.chat_client.on_new_media_callback = self.main_app.chat_window.handle_new_message
             self.main_app.chat_window.show()
         else:
             QMessageBox.critical(self, "错误", res)
@@ -184,7 +179,6 @@ class AddFriendDialog(QDialog):
         StyleGenerator.apply_style(self.cancel_btn, "button", extra="border-radius: 4px;")
         StyleGenerator.apply_style(self.confirm_btn, "button", extra="border-radius: 4px;")
 
-# 聊天窗口
 class ChatWindow(QWidget):
     def __init__(self, client: ChatClient, main_app: "ChatApp") -> None:
         super().__init__()
@@ -193,7 +187,7 @@ class ChatWindow(QWidget):
         self.client = client
         self.main_app = main_app
         self.auto_scrolling = False
-        self.last_message_times: Dict[str, str] = {}  # 保留本地时间缓存，但从 friends 获取
+        self.last_message_times: Dict[str, str] = {}
         self.current_page = 1
         self.page_size = 20
         self.loading_history = False
@@ -204,6 +198,8 @@ class ChatWindow(QWidget):
         self.scroll_to_bottom_btn: Optional[QPushButton] = None
         self.add_friend_dialog: Optional[AddFriendDialog] = None
         self.user_details_right = None
+        self.is_selection_mode = False  # 多选模式标志
+        self.selection_buttons_widget = None  # 多选模式下的按钮容器
         self._setup_window()
         self._setup_ui()
         theme_manager.register(self)
@@ -212,6 +208,8 @@ class ChatWindow(QWidget):
         self.image_list = []
         self.user_details_widget = None
         self.client.on_conversations_update_callback = self.update_conversations
+        self.client.on_new_message_callback = self.handle_new_message
+        self.client.on_new_media_callback = self.handle_new_message
 
 
     def _setup_window(self) -> None:
@@ -234,7 +232,6 @@ class ChatWindow(QWidget):
         main_layout.addWidget(self.left_panel, 0, 1)
         main_layout.addWidget(self.content_widget, 0, 2)
         main_layout.setColumnStretch(2, 1)
-        self._update_friend_list_width()
 
     def _create_panel(self, button_setup: Callable[[QVBoxLayout], None], width: int) -> QWidget:
         panel = QWidget(self)
@@ -277,13 +274,15 @@ class ChatWindow(QWidget):
         # 切换到下一个模式
         self.current_mode_index = (self.current_mode_index + 1) % len(self.modes)
         new_mode = self.modes[self.current_mode_index]
-
         # 更新主题
         theme_manager.set_mode(new_mode)
         self.update_theme(theme_manager.current_theme)
-
         # 更新按钮图标
         self.theme_toggle_button.setIcon(QIcon(resource_path(self.mode_icons[new_mode])))
+        mode_name = "浅色模式" if new_mode == "light" else "深色模式"
+        floating_label = FloatingLabel(f"已切换到{mode_name}", self)
+        floating_label.show()
+        floating_label.raise_()
 
     async def show_user_info(self) -> None:
         if not self.client.is_authenticated:
@@ -325,7 +324,7 @@ class ChatWindow(QWidget):
                 avatar = None
 
         if not avatar and avatar_id:
-            resp_download = await self.client.download_media(avatar_id, save_path)
+            resp_download = await self.client.download_media(avatar_id, save_path, "avatar")
             if resp_download.get("status") == "success":
                 avatar = QPixmap(save_path)
                 if avatar.isNull():
@@ -347,6 +346,47 @@ class ChatWindow(QWidget):
         self.content_layout.setRowStretch(0, 1)
         self.content_layout.setColumnStretch(0, 1)
         theme_manager.register(self.user_details_widget)
+
+    def enter_selection_mode(self) -> None:
+        """进入多选模式"""
+        if self.is_selection_mode or not self.chat_components.get('chat'):
+            return
+        self.is_selection_mode = True
+        # 通知 OnLine 控件显示选择模式按钮
+        if online := self.chat_components.get('online'):
+            online.show_selection_buttons(self)
+        logging.debug("已进入多选模式")
+
+    def exit_selection_mode(self) -> None:
+        """退出多选模式"""
+        if not self.is_selection_mode:
+            return
+        self.is_selection_mode = False
+        # 通知 OnLine 控件隐藏选择模式按钮
+        if online := self.chat_components.get('online'):
+            online.hide_selection_buttons()
+        chat_area = self.chat_components.get('chat')
+        if chat_area:
+            chat_area.clear_selection()
+        logging.debug("已退出多选模式")
+
+    async def delete_selected_messages(self) -> None:
+        """删除选中的消息（保持不变）"""
+        chat_area = self.chat_components.get('chat')
+        if not chat_area or not self.is_selection_mode:
+            return
+        selected_rowids = chat_area.get_selected_rowids()
+        if not selected_rowids:
+            QMessageBox.information(self, "提示", "请先选择要删除的消息")
+            return
+        reply = create_confirmation_dialog(self, "确认删除", f"您确定要删除 {len(selected_rowids)} 条选中的消息吗？此操作无法撤销。")
+        if reply == QMessageBox.No:
+            return
+        resp = await self.client.delete_messages(selected_rowids)
+        if resp.get("status") == "success":
+            self.exit_selection_mode()
+        else:
+            QMessageBox.critical(self, "错误", f"删除失败: {resp.get('message', '未知错误')}")
 
     def _on_friend_clicked(self, username: str):
         """处理 OnLine 点击信号"""
@@ -380,7 +420,7 @@ class ChatWindow(QWidget):
                 avatar = None
 
         if not avatar and avatar_id:
-            resp = await self.client.download_media(avatar_id, save_path)
+            resp = await self.client.download_media(avatar_id, save_path, "avatar")
             if resp.get("status") == "success":
                 avatar = QPixmap(save_path)
                 if avatar.isNull():
@@ -421,7 +461,7 @@ class ChatWindow(QWidget):
         StyleGenerator.apply_style(self.mode_switch_button, "button")
         self.mode_switch_button.clicked.connect(self.toggle_theme_panel)
         self.add_button = QPushButton(panel)
-        self.add_button.setFixedHeight(40)
+        self.add_button.setFixedSize(158, 40)
         StyleGenerator.apply_style(self.add_button, "button")
         self.add_button.setIcon(QIcon(resource_path("icon/Add_Icon.ico")))
         self.add_button.setIconSize(QSize(25, 25))
@@ -434,8 +474,10 @@ class ChatWindow(QWidget):
         self.friend_list = QListWidget(panel)
         self.friend_list.setSelectionMode(QListWidget.SingleSelection)
         self.friend_list.setFocusPolicy(Qt.StrongFocus)
+        self.friend_list.setFixedWidth(180)  # 设置固定宽度为 180
         StyleGenerator.apply_style(self.friend_list, "list_widget")
-        self.friend_list.verticalScrollBar().setStyleSheet(StyleGenerator._BASE_STYLES["scrollbar"].format(**theme_manager.current_theme))
+        self.friend_list.verticalScrollBar().setStyleSheet(
+            StyleGenerator._BASE_STYLES["scrollbar"].format(**theme_manager.current_theme))
         self.friend_list.itemClicked.connect(lambda item: run_async(self.select_friend(item)))
 
         layout.addLayout(top_layout)
@@ -465,6 +507,7 @@ class ChatWindow(QWidget):
         self.update_theme(theme_manager.current_theme)
 
     def update_theme(self, theme: dict) -> None:
+        # 更新已有主题逻辑
         self.setStyleSheet(f"background-color: {theme['MAIN_INTERFACE']};")
         if hasattr(self, "friend_list"):
             StyleGenerator.apply_style(self.friend_list, "list_widget")
@@ -492,10 +535,13 @@ class ChatWindow(QWidget):
             StyleGenerator.apply_style(self.image_viewer.close_button, "button", extra="border-radius: 15px;")
         if self.user_details_widget and not sip.isdeleted(self.user_details_widget):
             self.user_details_widget.update_theme(theme)
+        # 更新多选模式按钮的主题
+        if self.selection_buttons_widget and not sip.isdeleted(self.selection_buttons_widget):
+            for btn in self.selection_buttons_widget.findChildren(QPushButton):
+                StyleGenerator.apply_style(btn, "button", extra="border-radius: 4px;")
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._update_friend_list_width()
 
         scroll = self.chat_components.get('scroll')
         chat_area = self.chat_components.get('chat')
@@ -557,7 +603,6 @@ class ChatWindow(QWidget):
 
         QTimer.singleShot(0, restore_scroll_position)
 
-        # 延迟恢复滚动位置，确保布局更新完成
         def restore_scroll_position():
             if not scroll or not chat_area or sip.isdeleted(scroll) or sip.isdeleted(chat_area):
                 return
@@ -574,10 +619,22 @@ class ChatWindow(QWidget):
 
         QTimer.singleShot(0, restore_scroll_position)
 
-    def _update_friend_list_width(self) -> None:
-        width = 75 if self.width() <= 550 else 180
-        self.friend_list.setFixedWidth(width)
-        self.add_button.setFixedWidth(width - self.mode_switch_button.width() - 2)
+        # 延迟恢复滚动位置，确保布局更新完成
+        def restore_scroll_position():
+            if not scroll or not chat_area or sip.isdeleted(scroll) or sip.isdeleted(chat_area):
+                return
+            sb = scroll.verticalScrollBar()
+            new_max = sb.maximum()
+            if anchor_bubble and not sip.isdeleted(anchor_bubble):
+                new_bubble_top = anchor_bubble.mapTo(chat_area, QPoint(0, 0)).y()
+                new_value = max(0, new_bubble_top - anchor_offset)
+            else:
+                new_value = 0 if old_value == 0 else min(old_value, new_max)
+            new_value = min(new_value, new_max)
+            sb.setValue(new_value)
+            scroll.viewport().update()
+
+        QTimer.singleShot(0, restore_scroll_position)
 
     def clear_chat_area(self) -> None:
         # 清理 self.user_details_right
@@ -711,8 +768,8 @@ class ChatWindow(QWidget):
     def on_scroll_button_clicked(self) -> None:
         self.adjust_scroll()
         if self.client.current_friend:
-            self.client.clear_unread_messages(self.client.current_friend)  # 清零
-            run_async(self.update_friend_list())
+            self.client.clear_unread_messages(self.client.current_friend)
+            run_async(self.update_friend_list(affected_users=[self.client.current_friend]))  # 精准更新当前好友
         self.scroll_to_bottom_btn.hide()
 
     def on_scroll_changed(self, value: int) -> None:
@@ -721,10 +778,13 @@ class ChatWindow(QWidget):
             run_async(self.load_chat_history(reset=False))
         self._check_scroll_position()
         if (self.client.current_friend and
-            self.client.unread_messages.get(self.client.current_friend, 0) > 0 and
-            not self.auto_scrolling and sb.maximum() - value <= 5):
-            self.client.clear_unread_messages(self.client.current_friend)  # 清零
-            run_async(self.update_friend_list())
+                self.client.unread_messages.get(self.client.current_friend, 0) > 0 and
+                not self.auto_scrolling and sb.maximum() - value <= 5):
+            old_unread = self.client.unread_messages.get(self.client.current_friend, 0)
+            self.client.clear_unread_messages(self.client.current_friend)
+            if old_unread > 0:  # 仅当未读消息数变化时更新
+                logging.debug(f"滚动条变化，当前好友 {self.client.current_friend} 未读消息从 {old_unread} 清零，精准更新")
+                run_async(self.update_friend_list(affected_users=[self.client.current_friend]))  # 精准更新
 
     def _scroll_to_bottom(self) -> None:
         """确保界面更新完成后，将滚动条滚动到最底部"""
@@ -852,23 +912,6 @@ class ChatWindow(QWidget):
         if is_current or self.should_scroll_to_bottom():
             self.adjust_scroll()
 
-    async def _handle_message(self, sender: str, msg: str, is_current: bool, wt: str, received: bool,
-                              message_type: str = 'text', file_id: str = None, original_file_name: str = None,
-                              thumbnail_path: str = None, file_size: str = None, duration: str = None) -> None:
-        self.last_message_times[sender] = wt
-        if sender == self.client.current_friend:
-            if received and file_size and message_type != 'image' and isinstance(file_size, str) and 'KB' in file_size:
-                file_size = f"{float(file_size.replace('KB', '').strip()) / 1024:.2f} MB"
-            await self.add_message(msg, is_current, format_time(wt), message_type, file_id, original_file_name,
-                                   thumbnail_path, file_size, duration)
-            if received:
-                if self.should_scroll_to_bottom():
-                    self.adjust_scroll()
-                    self.client.clear_unread_messages(sender)
-                    await self.update_friend_list()
-        if not self.isVisible() or self.isMinimized():
-            self.show_notification(f"用户 {sender}:", msg)
-
     def generate_reply_preview(self, reply_to: Optional[int]) -> Optional[str]:
         """根据 reply_to_id 从 active_bubbles 生成 reply_preview"""
         if reply_to and reply_to in self.active_bubbles:
@@ -917,9 +960,6 @@ class ChatWindow(QWidget):
                 bubble.parent().deleteLater()
             self.adjust_scroll()
             QMessageBox.critical(self, "错误", f"消息发送失败: {resp.get('message', '未知错误')}")
-
-    async def send_media(self, file_path: str, file_type: str) -> None:
-        await self.send_multiple_media([file_path])
 
     async def send_multiple_media(self, file_paths: List[str], message: str = "") -> None:
         async with self.send_lock:
@@ -1014,7 +1054,7 @@ class ChatWindow(QWidget):
         file_id = res.get("file_id")
         file_type = res.get("file_type")
         original_file_name = res.get("original_file_name")
-        thumbnail_path = res.get("thumbnail_path")
+        thumbnail_path = res.get("thumbnail_local_path")
         file_size = res.get("file_size")
         duration = res.get("duration")
         file_size_str = None
@@ -1026,13 +1066,6 @@ class ChatWindow(QWidget):
 
         self.last_message_times[sender] = wt
 
-        if msg_type == "new_media" and file_type == "image" and file_id:
-            image_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "images")
-            os.makedirs(image_dir, exist_ok=True)
-            thumbnail_path = os.path.join(image_dir, f"{original_file_name or file_id}")
-            if not os.path.exists(thumbnail_path) and file_id:
-                await self.client.download_media(file_id, thumbnail_path)
-
         if sender == self.client.current_friend:
             if not self.chat_components.get('chat'):
                 self.setup_chat_area()
@@ -1040,15 +1073,16 @@ class ChatWindow(QWidget):
             bubble = ChatBubbleWidget(
                 msg, format_time(wt), "left", False, bubble_type,
                 file_id, original_file_name, thumbnail_path, file_size_str, duration,
-                rowid=rowid, reply_to=reply_to, reply_preview=reply_preview
-            )
+                rowid=rowid, reply_to=reply_to, reply_preview=reply_preview)
             self.chat_components['chat'].addBubble(bubble)
             if bubble.rowid:
                 self.active_bubbles[bubble.rowid] = bubble
+            if bubble_type == "image" and file_id:
+                self.image_list.append((file_id, original_file_name or f"image_{file_id}"))
             if self.should_scroll_to_bottom():
                 self.adjust_scroll()
                 self.client.clear_unread_messages(sender)
-                await self.update_friend_list()
+                await self.update_friend_list(affected_users=[sender])  # 精准更新发送者
             else:
                 self._check_scroll_position()
 
@@ -1073,15 +1107,16 @@ class ChatWindow(QWidget):
         )
         return online + offline
 
-    async def update_conversations(self, friends: List[dict], affected_users: Optional[List[str]] = None) -> None:
-        # 只读取传入的 friends，不直接访问 self.client.friends
+    async def update_conversations(self, friends: List[dict], affected_users: Optional[List[str]] = None, deleted_rowids: List[int] = None) -> None:
+        chat_area = self.chat_components.get('chat')
         if affected_users:
-            await self.update_friend_list(affected_users=affected_users)
+            asyncio.create_task(self.update_friend_list(affected_users=affected_users))
+            asyncio.create_task(chat_area.remove_bubbles_by_rowids(deleted_rowids, show_floating_label=False))
+            print(f"删除的消息ID:{deleted_rowids}\n传入的受到影响的好友:{affected_users}")
         else:
-            await self.update_friend_list(friends=friends)
+            asyncio.create_task(self.update_friend_list(friends=friends))
 
-    async def update_friend_list(self, friends: Optional[List[dict]] = None,
-                                 affected_users: Optional[List[str]] = None) -> None:
+    async def update_friend_list(self, friends: Optional[List[dict]] = None, affected_users: Optional[List[str]] = None) -> None:
         """更新好友列表，避免重复创建好友项"""
         async with self.update_lock:  # 使用异步锁防止并发更新
             try:
@@ -1267,7 +1302,6 @@ class ChatWindow(QWidget):
         return json.dumps(normalized, sort_keys=True)
 
     async def _update_widget_avatar(self, widget: FriendItemWidget, avatar_id: Optional[str], cache_dir: str) -> None:
-        """更新 widget 的头像"""
         try:
             if not avatar_id:
                 widget.avatar_pixmap = None
@@ -1279,28 +1313,18 @@ class ChatWindow(QWidget):
             if os.path.exists(save_path):
                 avatar_pixmap = QPixmap(save_path)
                 if avatar_pixmap.isNull():
-                    logging.debug(f"本地缓存头像无效，重新下载: {save_path}")
                     os.remove(save_path)
                     avatar_pixmap = None
-
             if not avatar_pixmap:
-                logging.debug(f"下载头像 {widget.username}: {avatar_id}")
-                resp = await self.client.download_media(avatar_id, save_path)
+                resp = await self.client.download_media(avatar_id, save_path, "avatar")
                 if resp.get("status") == "success":
                     avatar_pixmap = QPixmap(save_path)
                     if avatar_pixmap.isNull():
-                        logging.warning(f"头像文件无效: {save_path}")
                         avatar_pixmap = None
                 else:
-                    logging.warning(f"下载头像 {avatar_id} 失败: {resp.get('message', '未知错误')}")
                     avatar_pixmap = None
-
-            if avatar_pixmap and not sip.isdeleted(widget):
-                widget.avatar_pixmap = avatar_pixmap
-            else:
-                widget.avatar_pixmap = None  # 失败时回退到默认头像
+            widget.avatar_pixmap = avatar_pixmap if avatar_pixmap else None
         except Exception as e:
-            logging.error(f"更新头像 {widget.username} (ID: {avatar_id}) 失败: {e}")
             widget.avatar_pixmap = None
 
     async def load_chat_history(self, reset: bool = False) -> None:
@@ -1324,21 +1348,37 @@ class ChatWindow(QWidget):
                     file_size_str = f"{file_size / (1024 * 1024):.2f} MB"
                 else:
                     file_size_str = file_size
+
+                # 处理缩略图下载
+                file_id = msg.get("file_id")
+                attachment_type = msg.get("attachment_type")
+                if file_id and attachment_type in ["image", "video"]:
+                    save_path = os.path.join(self.client.thumbnail_dir, f"{file_id}_thumbnail")
+                    if not os.path.exists(save_path) or os.path.getsize(save_path) == 0:
+                        logging.debug(f"下载聊天记录缩略图: file_id={file_id}, save_path={save_path}")
+                        result = await self.client.download_media(file_id, save_path, "thumbnail")
+                        if result.get("status") != "success":
+                            logging.error(f"缩略图下载失败: {result.get('message')}")
+                    msg["thumbnail_local_path"] = save_path  # 添加本地缩略图路径
+
+                # 创建气泡，传递 thumbnail_local_path
                 bubble = ChatBubbleWidget(
                     msg.get("message", ""), format_time(msg.get("write_time", "")),
                     "right" if msg.get("is_current_user") else "left", msg.get("is_current_user", False),
-                    msg.get("attachment_type", "text"), msg.get("file_id"), msg.get("original_file_name"),
+                    attachment_type or "text", file_id, msg.get("original_file_name"),
                     msg.get("thumbnail_path"), file_size_str, msg.get("duration"),
                     rowid=msg.get("rowid"),
                     reply_to=msg.get("reply_to"),
-                    reply_preview=msg.get("reply_preview")
+                    reply_preview=msg.get("reply_preview"),
+                    thumbnail_local_path=msg.get("thumbnail_local_path")  # 传递本地路径
                 )
                 bubbles.append(bubble)
                 if bubble.rowid:
                     self.active_bubbles[bubble.rowid] = bubble
-                if msg.get("attachment_type") == "image" and msg.get("file_id"):
+                if attachment_type == "image" and file_id:
                     self.image_list.append(
-                        (msg.get("file_id"), msg.get("original_file_name") or f"image_{msg.get('file_id')}"))
+                        (file_id, msg.get("original_file_name") or f"image_{file_id}"))
+
             self.chat_components['chat'].addBubbles(bubbles)
 
             def update_and_scroll():
@@ -1385,8 +1425,15 @@ class ChatWindow(QWidget):
         if sb.maximum() - sb.value() <= 5:
             old_unread = self.client.unread_messages.get(friend, 0)
             self.client.clear_unread_messages(friend)
-            logging.debug(f"选择好友 {friend}，未读消息从 {old_unread} 清零")
-            await self.update_friend_list()  # 改为 await，确保同步更新
+            logging.debug(f"选择好友 {friend}，未读消息从 {old_unread} 清零，未更新好友列表")
+            # 手动更新当前好友的未读消息显示（如果需要）
+            for i in range(self.friend_list.count()):
+                item = self.friend_list.item(i)
+                widget = self.friend_list.itemWidget(item)
+                if widget and widget.username == friend and not sip.isdeleted(widget):
+                    widget.unread = 0  # 直接更新 UI 上的未读计数
+                    widget.update_display()
+                    break
 
     def show_notification(self, sender: str, msg: str) -> None:
         self.notification_sender = sender.replace("用户 ", "").rstrip(":")
@@ -1483,7 +1530,12 @@ class ChatWindow(QWidget):
         self.hide()
 
     def keyPressEvent(self, event) -> None:
-        # 检查是否有回复预览
+        # 在多选模式下按 Esc 退出
+        if self.is_selection_mode and event.key() == Qt.Key_Escape:
+            self.exit_selection_mode()
+            event.accept()
+            return
+        # 其他按键事件处理保持不变
         input_widget = self.chat_components.get('input')
         if input_widget and input_widget.reply_widget and event.key() == Qt.Key_Escape:
             input_widget.remove_reply_preview()

@@ -85,7 +85,7 @@ def init_db():
                 FOREIGN KEY (friend) REFERENCES users(username)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
         ''')
-        cursor.execute('''
+        cursor.execute(''' 
             CREATE TABLE IF NOT EXISTS messages (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 sender VARCHAR(255),
@@ -100,6 +100,7 @@ def init_db():
                 duration FLOAT,
                 reply_to BIGINT,
                 reply_preview TEXT,
+                file_id VARCHAR(255),  -- 新增 file_id 列
                 FOREIGN KEY (sender) REFERENCES users(username),
                 FOREIGN KEY (receiver) REFERENCES users(username),
                 FOREIGN KEY (reply_to) REFERENCES messages(id)
@@ -196,12 +197,13 @@ def recv_all(sock: socket.socket, length: int) -> bytes:
     return data
 
 def send_response(client_sock: socket.socket, response: dict):
-    """发送加密响应"""
     try:
         plaintext = json.dumps(response, ensure_ascii=False).encode('utf-8')
         ciphertext = fernet.encrypt(plaintext)
         length_header = len(ciphertext).to_bytes(4, byteorder='big')
+        logging.debug(f"发送响应给客户端，大小: {len(ciphertext)} 字节，内容: {response}")
         client_sock.sendall(length_header + ciphertext)
+        logging.info("响应发送成功")
     except Exception as e:
         logging.error(f"发送响应失败: {e}")
 
@@ -537,17 +539,17 @@ def send_message(request: dict, client_sock: socket.socket) -> dict:
 
 def send_media(request: dict, client_sock: socket.socket) -> dict:
     logging.debug(f"收到 send_media 请求: {request}")
-    from_user = request.get("from")
-    to_user = request.get("to")
-    original_file_name = request.get("file_name")
-    file_type = request.get("file_type")
-    message = request.get("message", "")
-    reply_to = request.get("reply_to")
-    request_id = request.get("request_id")
-    file_data_b64 = request.get("file_data", "")
-    total_size = request.get("total_size", 0)
+    from_user = request.get("from")  # 发送者
+    to_user = request.get("to")      # 接收者
+    original_file_name = request.get("file_name")  # 原始文件名
+    file_type = request.get("file_type")  # 文件类型
+    message = request.get("message", "")  # 附加消息
+    reply_to = request.get("reply_to")    # 回复的消息 ID
+    request_id = request.get("request_id")  # 请求 ID
+    file_data_b64 = request.get("file_data", "")  # 文件数据（base64 编码）
+    total_size = request.get("total_size", 0)  # 文件总大小
 
-    # 保持原始文件夹结构
+    # 根据文件类型确定上传目录
     if file_type == "file":
         upload_dir = os.path.join(BASE_DIR, "files")
     elif file_type == "image":
@@ -556,8 +558,9 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
         upload_dir = os.path.join(BASE_DIR, "videos")
     else:
         upload_dir = os.path.join(BASE_DIR, "uploads")
-    os.makedirs(upload_dir, exist_ok=True)
+    os.makedirs(upload_dir, exist_ok=True)  # 确保目录存在
 
+    # 初始化上传会话
     if request_id not in upload_sessions:
         unique_file_name = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{original_file_name}"
         file_path = os.path.join(upload_dir, unique_file_name)
@@ -567,6 +570,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
     file_path = session["file_path"]
     unique_file_name = session["unique_file_name"]
 
+    # 处理分块上传
     if file_data_b64:
         try:
             file_data = base64.b64decode(file_data_b64)
@@ -581,12 +585,14 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
     else:
         file_size = session["received_size"]
         thumbnail_path = ""
+        thumbnail_data_b64 = ""  # 用于存储缩略图的 base64 数据
         duration = 0
 
         if not os.path.exists(file_path):
             logging.error(f"文件未找到: {file_path}")
             return {"type": "send_media", "status": "error", "message": "文件保存失败，路径未找到", "request_id": request_id}
 
+        # 生成缩略图并读取数据
         if file_type == "image":
             try:
                 image = Image.open(file_path)
@@ -595,6 +601,9 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 thumbnail_path = os.path.join(upload_dir, thumbnail_filename)
                 image.save(thumbnail_path, format=image.format)
                 logging.debug(f"生成图片缩略图: {thumbnail_path}")
+                # 读取缩略图数据并编码为 base64
+                with open(thumbnail_path, "rb") as thumb_file:
+                    thumbnail_data_b64 = base64.b64encode(thumb_file.read()).decode('utf-8')
                 if not os.path.exists(thumbnail_path):
                     logging.error(f"缩略图文件未生成: {thumbnail_path}")
             except Exception as e:
@@ -614,6 +623,9 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 video.close()
                 reader.close()
                 logging.debug(f"生成视频缩略图: {thumbnail_path}, 时长: {duration}秒")
+                # 读取缩略图数据并编码为 base64
+                with open(thumbnail_path, "rb") as thumb_file:
+                    thumbnail_data_b64 = base64.b64encode(thumb_file.read()).decode('utf-8')
                 if not os.path.exists(thumbnail_path):
                     logging.error(f"缩略图文件未生成: {thumbnail_path}")
             except Exception as e:
@@ -621,6 +633,7 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 thumbnail_path = ""
                 duration = 0
 
+        # 生成回复预览
         reply_preview = None
         if reply_to:
             reply_preview_data = generate_reply_preview(reply_to)
@@ -638,12 +651,15 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
             logging.debug(f"插入参数: sender={from_user}, receiver={to_user}, message={message}, "
                           f"write_time={current_time}, attachment_type={file_type}, attachment_path={file_path}, "
                           f"original_file_name={original_file_name}, thumbnail_path={thumbnail_path}, "
-                          f"file_size={file_size}, duration={duration}, reply_to={reply_to}, reply_preview={reply_preview}")
+                          f"file_size={file_size}, duration={duration}, reply_to={reply_to}, "
+                          f"reply_preview={reply_preview}, file_id={unique_file_name}")
             cursor.execute(''' 
-                INSERT INTO messages (sender, receiver, message, write_time, attachment_type, attachment_path, 
-                                      original_file_name, thumbnail_path, file_size, duration, reply_to, reply_preview)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ''', (from_user, to_user, message, current_time, file_type, file_path, original_file_name, thumbnail_path, file_size, duration, reply_to, reply_preview))
+                        INSERT INTO messages (sender, receiver, message, write_time, attachment_type, attachment_path, 
+                                            original_file_name, thumbnail_path, file_size, duration, reply_to, 
+                                            reply_preview, file_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ''', (from_user, to_user, message, current_time, file_type, file_path, original_file_name,
+                          thumbnail_path, file_size, duration, reply_to, reply_preview, unique_file_name))
             rowid = cursor.lastrowid
             conn.commit()
 
@@ -656,11 +672,12 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 "attachment_type": file_type,
                 "original_file_name": original_file_name,
                 "reply_to": reply_to,
-                "reply_preview": reply_preview
+                "reply_preview": reply_preview,
+                "file_id": unique_file_name
             }
             update_conversation_last_message(from_user, to_user, last_message)
 
-            # 根据文件类型设置 conversations
+            # 根据文件类型设置会话内容
             if file_type == "file":
                 conversations = "[文件]"
             elif file_type == "image":
@@ -668,9 +685,9 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
             elif file_type == "video":
                 conversations = "[视频]"
             else:
-                conversations = message  # 默认使用 message
+                conversations = message
 
-            # 推送消息给接收者
+            # 推送消息给接收者，包含缩略图数据
             push_payload = {
                 "type": "new_media",
                 "status": "success",
@@ -686,20 +703,16 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 "reply_to": reply_to,
                 "reply_preview": reply_preview,
                 "rowid": rowid,
-                "conversations": conversations
+                "conversations": conversations,
+                "thumbnail_data": thumbnail_data_b64 if file_type in ("image", "video") else ""  # 添加缩略图数据
             }
-            if thumbnail_path and os.path.exists(thumbnail_path):
-                push_payload["thumbnail_path"] = thumbnail_path
-            else:
-                logging.warning(f"缩略图未推送: {thumbnail_path} 不存在或未生成")
-
             with clients_lock:
                 if to_user in clients:
                     send_response(clients[to_user], push_payload)
 
-            # 返回给发送者的响应
+            # 返回给发送者的响应，包含缩略图数据
             del upload_sessions[request_id]
-            return {
+            response = {
                 "type": "send_media",
                 "status": "success",
                 "message": f"{file_type} 已发送给 {to_user}",
@@ -711,8 +724,10 @@ def send_media(request: dict, client_sock: socket.socket) -> dict:
                 "reply_to": reply_to,
                 "reply_preview": reply_preview,
                 "text_message": message,
-                "conversations": conversations
+                "conversations": conversations,
+                "thumbnail_data": thumbnail_data_b64 if file_type in ("image", "video") else ""  # 添加缩略图数据
             }
+            return response
         except Error as e:
             logging.error(f"保存媒体消息失败: {e}")
             return {"type": "send_media", "status": "error", "message": "保存失败", "request_id": request_id}
@@ -808,8 +823,8 @@ def delete_messages(request: dict, client_sock: socket.socket) -> dict:
         return_data = {
             "type": "messages_deleted",
             "status": "success",
-            "message": f"成功删除 {len(messages_to_delete)} 条消息",
             "request_id": request_id,
+            "to": username,
             "deleted_rowids": [msg['id'] for msg in messages_to_delete],
             "conversations": conversations_content,
             "write_time": write_time
@@ -881,9 +896,9 @@ def get_chat_history_paginated(request: dict, client_sock: socket.socket) -> dic
     try:
         cursor = conn.cursor(dictionary=True)
         offset = (page - 1) * page_size
-        cursor.execute('''
+        cursor.execute(''' 
             SELECT id AS rowid, write_time, sender, receiver, message, attachment_type, attachment_path, 
-                   original_file_name, thumbnail_path, file_size, duration, reply_to, reply_preview
+                   original_file_name, thumbnail_path, file_size, duration, reply_to, reply_preview, file_id
             FROM messages
             WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
             ORDER BY write_time DESC, id DESC
@@ -897,27 +912,23 @@ def get_chat_history_paginated(request: dict, client_sock: socket.socket) -> dic
         conn.close()
     history = []
     for row in rows:
-        raw_thumbnail_path = row['thumbnail_path']
-        # 如果是相对路径，基于当前工作目录解析
-        if raw_thumbnail_path and not os.path.isabs(raw_thumbnail_path):
-            normalized_thumbnail_path = os.path.join(os.getcwd(), raw_thumbnail_path)
-        else:
-            normalized_thumbnail_path = raw_thumbnail_path if raw_thumbnail_path else ""
-
-        record = {"rowid": row['rowid'], "write_time": row['write_time'].strftime('%Y-%m-%d %H:%M:%S'),
-                  "username": row['sender'], "friend_username": row['receiver'],
-                  "message": row['message'], "reply_to": row['reply_to'], "reply_preview": row['reply_preview']}
+        record = {
+            "rowid": row['rowid'],
+            "write_time": row['write_time'].strftime('%Y-%m-%d %H:%M:%S'),
+            "username": row['sender'],
+            "friend_username": row['receiver'],
+            "message": row['message'],
+            "reply_to": row['reply_to'],
+            "reply_preview": row['reply_preview']
+        }
         if row['attachment_type']:
             record["attachment_type"] = row['attachment_type']
-            record["file_id"] = os.path.basename(row['attachment_path'])
+            record["file_id"] = row['file_id'] if row['file_id'] else os.path.basename(row['attachment_path'])
             record["original_file_name"] = row['original_file_name']
-            record["thumbnail_path"] = normalized_thumbnail_path  # 使用规范化后的路径
             record["file_size"] = row['file_size']
             record["duration"] = row['duration']
-            if normalized_thumbnail_path:
-                exists = os.path.exists(normalized_thumbnail_path)
-                logging.debug(f"检查路径存在性: {repr(normalized_thumbnail_path)}, 结果: {exists}")
         history.append(record)
+
     resp = {"type": "chat_history", "status": "success", "chat_history": history, "request_id": request_id}
     send_response(client_sock, resp)
     return resp
@@ -950,6 +961,34 @@ def add_friend(request: dict, client_sock: socket.socket) -> dict:
     if response.get("status") == "success":
         push_friends_update(username)
         push_friends_update(friend)
+    return response
+
+
+def logout(request: dict, client_sock: socket.socket) -> dict:
+    """处理用户退出登录"""
+    username = request.get("username")
+    request_id = request.get("request_id")
+
+    response = {
+        "type": "logout",
+        "status": "success",
+        "message": f"{username} 已退出登录",
+        "request_id": request_id
+    }
+
+    with clients_lock:
+        if username in clients and clients[username] == client_sock:
+            del clients[username]
+            logging.info(f"用户 {username} 主动退出登录")
+            push_friends_update(username)
+        else:
+            response = {
+                "type": "logout",
+                "status": "error",
+                "message": "用户未登录或会话不匹配",
+                "request_id": request_id
+            }
+    send_response(client_sock, response)
     return response
 
 def handle_client(client_sock: socket.socket, client_addr):
@@ -1002,6 +1041,11 @@ def handle_client(client_sock: socket.socket, client_addr):
                 response = update_friend_remarks(request, client_sock)
             elif req_type == "delete_messages":
                 response = delete_messages(request, client_sock)
+            elif req_type == "logout":  # 新增退出登录处理
+                response = logout(request, client_sock)
+                if response.get("status") == "success":
+                    logged_in_user = None
+                    break  # 退出循环，关闭连接
             elif req_type == "exit":
                 response = {"type": "exit", "status": "success", "message": f"{request.get('username')} 已退出", "request_id": request.get("request_id")}
                 send_response(client_sock, response)
@@ -1009,7 +1053,6 @@ def handle_client(client_sock: socket.socket, client_addr):
                 break
             else:
                 response = {"status": "error", "message": "未知的请求类型", "request_id": request.get("request_id")}
-
             if response:
                 send_response(client_sock, response)
     except ConnectionResetError:
@@ -1021,14 +1064,15 @@ def handle_client(client_sock: socket.socket, client_addr):
             with clients_lock:
                 if logged_in_user in clients and clients[logged_in_user] == client_sock:
                     del clients[logged_in_user]
-                    logging.info(f"用户 {logged_in_user} 已退出")
+                    logging.info(f"用户 {logged_in_user} 已退出（连接断开）")
             push_friends_update(logged_in_user)
         else:
             with clients_lock:
                 for user, sock in list(clients.items()):
                     if sock == client_sock:
                         del clients[user]
-                        logging.info(f"用户 {user} 已退出")
+                        logging.info(f"用户 {user} 已退出（连接断开）")
+                        push_friends_update(user)
                         break
         client_sock.close()
         logging.info(f"关闭连接：{client_addr}")
@@ -1063,39 +1107,63 @@ def get_user_info(request: dict, client_sock: socket.socket) -> dict:
 
 def download_media(request: dict, client_sock: socket.socket) -> dict:
     file_id = request.get("file_id")
+    download_type = request.get("download_type")
     request_id = request.get("request_id")
     offset = request.get("offset", 0)
+
+    # 合法的 download_type
+    valid_types = {"avatar", "image", "video", "file", "thumbnail"}
+    if download_type not in valid_types:
+        resp = {"type": "download_media", "status": "error", "message": f"无效的 download_type: {download_type}", "request_id": request_id}
+        send_response(client_sock, resp)
+        return resp
+
     conn = get_db_connection()
     if not conn:
         resp = {"type": "download_media", "status": "error", "message": "数据库连接失败", "request_id": request_id}
         send_response(client_sock, resp)
         return resp
+
     try:
         with conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT attachment_path FROM messages WHERE attachment_path LIKE %s", (f"%{file_id}",))
-            result = cursor.fetchone()
-            if result:
-                file_path = result[0]
-            else:
+            file_path = None
+
+            if download_type == "avatar":
                 cursor.execute("SELECT avatar_path FROM users WHERE avatars = %s", (file_id,))
                 result = cursor.fetchone()
                 file_path = result[0] if result else None
-            logging.debug(f"查询文件：file_id={file_id}, file_path={file_path}")
+            elif download_type in {"image", "video", "file"}:
+                cursor.execute("SELECT attachment_path FROM messages WHERE file_id = %s AND attachment_type = %s",
+                               (file_id, download_type))
+                result = cursor.fetchone()
+                file_path = result[0] if result else None
+            elif download_type == "thumbnail":
+                cursor.execute("SELECT thumbnail_path FROM messages WHERE file_id = %s", (file_id,))
+                result = cursor.fetchone()
+                file_path = result[0] if result else None
+
+            logging.debug(f"查询文件：file_id={file_id}, download_type={download_type}, file_path={file_path}")
     except Error as e:
         logging.error(f"查询文件路径失败: {e}")
         file_path = None
     finally:
         conn.close()
 
-    # 如果 file_path 是相对路径，确保基于当前工作目录解析
-    if file_path and not os.path.isabs(file_path):
+    # 数据库没找到，直接返回错误
+    if not file_path:
+        logging.error(f"数据库未找到文件: file_id={file_id}, download_type={download_type}")
+        resp = {"type": "download_media", "status": "error", "message": f"文件不存在或无记录: {file_id}", "request_id": request_id}
+        send_response(client_sock, resp)
+        return resp
+
+    # 确保路径是绝对路径
+    if not os.path.isabs(file_path):
         file_path = os.path.join(os.getcwd(), file_path)
 
-    if not file_path or not os.path.exists(file_path):
-        logging.error(f"文件不存在: file_id={file_id}, path={file_path}")
-        resp = {"type": "download_media", "status": "error", "message": f"文件不存在: {file_id}",
-                "request_id": request_id}
+    if not os.path.exists(file_path):
+        logging.error(f"文件路径不存在: file_id={file_id}, download_type={download_type}, path={file_path}")
+        resp = {"type": "download_media", "status": "error", "message": f"文件不存在: {file_id}", "request_id": request_id}
         send_response(client_sock, resp)
         return resp
 
@@ -1108,12 +1176,14 @@ def download_media(request: dict, client_sock: socket.socket) -> dict:
             chunk = f.read(chunk_size)
             is_complete = (offset + len(chunk) >= file_size) or not chunk
             if not chunk:
-                resp = {"type": "download_media", "status": "success", "file_size": file_size, "offset": offset, "is_complete": is_complete, "request_id": request_id, "file_data": ""}
+                resp = {"type": "download_media", "status": "success", "file_size": file_size, "offset": offset,
+                        "is_complete": is_complete, "request_id": request_id, "file_data": ""}
             else:
                 encoded_data = base64.b64encode(chunk).decode('utf-8')
-                resp = {"type": "download_media", "status": "success", "file_size": file_size, "offset": offset, "is_complete": is_complete, "request_id": request_id, "file_data": encoded_data}
+                resp = {"type": "download_media", "status": "success", "file_size": file_size, "offset": offset,
+                        "is_complete": is_complete, "request_id": request_id, "file_data": encoded_data}
             send_response(client_sock, resp)
-            logging.debug(f"发送下载块: file_id={file_id}, offset={offset}, size={len(chunk)}, path={file_path}")
+            logging.debug(f"发送下载块: file_id={file_id}, download_type={download_type}, offset={offset}, size={len(chunk)}, path={file_path}")
         return resp
     except Exception as e:
         logging.error(f"文件下载失败: {e}, path={file_path}")

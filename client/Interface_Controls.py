@@ -10,10 +10,14 @@ import imageio
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QEasingCurve, QPropertyAnimation, QTimer, pyqtSignal
 from PyQt5.QtGui import QPainter, QColor, QFont, QFontMetrics, QPixmap, QImage, QIcon, QPainterPath, QPen, QResizeEvent
-from PyQt5.QtWidgets import QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QGraphicsOpacityEffect, QGridLayout
+from PyQt5.QtWidgets import QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QGraphicsOpacityEffect, QGridLayout, \
+    QPushButton
 
 
 # ---------- 实用函数 ----------
+
+def run_async(coro) -> None:
+    asyncio.create_task(coro)
 
 def resource_path(relative_path: str) -> str:
     """
@@ -254,7 +258,7 @@ def create_badge(unread: int) -> QPixmap:
     return pm
 
 
-def generate_thumbnail(file_path: str, file_type: str, output_dir: str = "client/Chat_DATA/Chat_thumbnails") -> Optional[str]:
+def generate_thumbnail(file_path: str, file_type: str, output_dir: str = "client/Chat_DATA/thumbnails") -> Optional[str]:
     """
     生成图片或视频的缩略图，并返回缩略图路径。
     """
@@ -547,7 +551,6 @@ class FriendItemWidget(QWidget):
         self.update_display()
 
 class OnLine(QWidget):
-    # 定义一个信号，传递 username
     friend_clicked = pyqtSignal(str)
 
     def __init__(self, client: 'ChatClient', parent: Optional[QWidget] = None) -> None:
@@ -558,8 +561,8 @@ class OnLine(QWidget):
         self.online = False
         self.avatar_pixmap = None
         self.setAttribute(Qt.WA_StyledBackground, True)
+        self.selection_buttons_widget = None  # 用于存储选择模式按钮的容器
         self._init_ui()
-        # 添加点击事件
         self.avatar_label.mousePressEvent = self._on_click
         self.name_label.mousePressEvent = self._on_click
         self.avatar_label.setCursor(Qt.PointingHandCursor)
@@ -568,22 +571,22 @@ class OnLine(QWidget):
     def _init_ui(self) -> None:
         self.main_font = QFont("微软雅黑", 10)
         self.username_font = QFont("微软雅黑", 12)
-        layout = QGridLayout(self)  # 使用 QGridLayout 替代 QVBoxLayout 以支持多列布局
+        layout = QGridLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
 
         # 头像区域
         self.avatar_label = QLabel(self)
-        self.avatar_label.setFixedSize(40, 40)  # 设置头像大小
-        self.avatar_label.setScaledContents(True)  # 缩放内容以适应标签
+        self.avatar_label.setFixedSize(40, 40)
+        self.avatar_label.setScaledContents(True)
         self.avatar_label.setStyleSheet("border: none; background-color: transparent;")
-        layout.addWidget(self.avatar_label, 0, 0, 2, 1, Qt.AlignLeft | Qt.AlignVCenter)  # 占 1 列，跨 2 行
+        layout.addWidget(self.avatar_label, 0, 0, 2, 1, Qt.AlignLeft | Qt.AlignVCenter)
 
         # 用户名/名称区域
         self.name_label = QLabel(self)
         self.name_label.setFont(self.username_font)
         self.name_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        layout.addWidget(self.name_label, 0, 1, 1, 1)  # 第 0 行，第 1 列
+        layout.addWidget(self.name_label, 0, 1, 1, 1)
 
         # 在线状态区域
         status_layout = QHBoxLayout()
@@ -600,12 +603,54 @@ class OnLine(QWidget):
 
         status_layout.addWidget(self.status_icon_label)
         status_layout.addWidget(self.status_text_label)
-        status_layout.addStretch()
+        status_layout.addStretch()  # 添加伸缩空间
 
-        layout.addLayout(status_layout, 1, 1, 1, 1)  # 第 1 行，第 1 列
-        layout.setColumnStretch(2, 1)  # 增加一列用于拉伸
+        layout.addLayout(status_layout, 1, 1, 1, 1)
+
+        # 添加选择模式按钮区域（初始隐藏）
+        self.selection_layout = QHBoxLayout()
+        self.selection_layout.setContentsMargins(0, 0, 0, 0)
+        self.selection_layout.setSpacing(10)
+        layout.addLayout(self.selection_layout, 0, 2, 2, 1, Qt.AlignRight | Qt.AlignVCenter)
+        layout.setColumnStretch(1, 1)  # 中间列拉伸
+        layout.setColumnStretch(2, 0)  # 按钮列不拉伸
 
         self.setLayout(layout)
+
+    def show_selection_buttons(self, chat_window: 'ChatWindow') -> None:
+        """显示选择模式的按钮"""
+        if self.selection_buttons_widget and not sip.isdeleted(self.selection_buttons_widget):
+            self.selection_buttons_widget.show()
+            return
+
+        self.selection_buttons_widget = QWidget(self)
+        button_layout = QHBoxLayout(self.selection_buttons_widget)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(5)
+
+        cancel_btn = QPushButton("取消", self.selection_buttons_widget)
+        cancel_btn.setFixedSize(50, 25)
+        StyleGenerator.apply_style(cancel_btn, "button", extra="border-radius: 4px;")
+        cancel_btn.clicked.connect(chat_window.exit_selection_mode)
+
+        delete_btn = QPushButton("删除", self.selection_buttons_widget)
+        delete_btn.setFixedSize(50, 25)
+        StyleGenerator.apply_style(delete_btn, "button", extra="border-radius: 4px;")
+        delete_btn.clicked.connect(lambda: run_async(chat_window.delete_selected_messages()))
+
+        button_layout.addWidget(cancel_btn)
+        button_layout.addWidget(delete_btn)
+
+        self.selection_layout.addWidget(self.selection_buttons_widget)
+        theme_manager.register(self.selection_buttons_widget)
+
+    def hide_selection_buttons(self) -> None:
+        """隐藏选择模式的按钮"""
+        if self.selection_buttons_widget and not sip.isdeleted(self.selection_buttons_widget):
+            self.selection_layout.removeWidget(self.selection_buttons_widget)
+            self.selection_buttons_widget.hide()
+            self.selection_buttons_widget.deleteLater()
+            self.selection_buttons_widget = None
 
     def _on_click(self, event):
         """处理头像或名字点击事件"""
@@ -658,7 +703,7 @@ class OnLine(QWidget):
         """
         从服务器下载头像并更新显示。
         """
-        resp = await self.client.download_media(avatar_id, save_path)
+        resp = await self.client.download_media(avatar_id, save_path, "avatar")
         if resp.get("status") == "success":
             self.avatar_pixmap = QPixmap(save_path)
             if not self.avatar_pixmap.isNull():
@@ -708,8 +753,11 @@ class OnLine(QWidget):
         StyleGenerator.apply_style(self.name_label, "label")
         StyleGenerator.apply_style(self.status_text_label, "label")
         self.setStyleSheet(f"background-color: {theme['widget_bg']};")
-        # 更新头像显示（重新应用主题颜色）
         if self.avatar_pixmap and not self.avatar_pixmap.isNull():
             self.avatar_label.setPixmap(self._create_round_avatar(self.avatar_pixmap))
         else:
             self.avatar_label.setPixmap(self._create_default_avatar())
+        # 更新选择模式按钮的主题
+        if self.selection_buttons_widget and not sip.isdeleted(self.selection_buttons_widget):
+            for btn in self.selection_buttons_widget.findChildren(QPushButton):
+                StyleGenerator.apply_style(btn, "button", extra="border-radius: 4px;")
