@@ -202,9 +202,7 @@ class ChatClient:
                 length = int.from_bytes(header, 'big')
                 encrypted_payload = await self._recv_async(length)
                 resp = self._decrypt(encrypted_payload)
-                print(f"收到服务器响应: {resp}")
                 if resp.get("type") == "exit":
-                    print(f"收到的退出响应: {resp}")
                     self.is_running = False
                     req_id = resp.get("request_id")
                     if req_id in self.pending_requests:
@@ -214,17 +212,14 @@ class ChatClient:
                 if req_id in self.pending_requests:
                     self.pending_requests.pop(req_id).set_result(resp)
                 elif resp.get("type") in ["new_message", "new_media"] and (self.on_new_message_callback or self.on_new_media_callback):
-                    await self.parsing_new_message_or_media(resp)  # 保持 await，因为它会触发独立的 create_task
+                    await self.parsing_new_message_or_media(resp)
                 elif resp.get("type") == "friend_list_update":
                     self.friends = resp.get("friends", [])
-                    if self.on_friend_list_update_callback:
-                        asyncio.create_task(self.on_friend_list_update_callback(self.friends))
-                    if self.on_conversations_update_callback:
-                        asyncio.create_task(self.on_conversations_update_callback(self.friends))
+                    await self.on_friend_list_update_callback(self.friends)
                 elif resp.get("type") == "deleted_messages":
-                    await self.parsing_delete_message(resp)  # 保持 await，因为内部已改为 create_task
+                    await self.parsing_delete_message(resp)
                 elif resp.get("type") == "Update_Remarks" and self.on_update_remarks_callback:
-                    asyncio.create_task(self.on_update_remarks_callback(resp))
+                    await self.on_update_remarks_callback(resp)
             except Exception as e:
                 logging.error(f"读取推送消息失败: {e}")
                 if not self.is_running:

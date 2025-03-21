@@ -809,7 +809,7 @@ class ChatWindow(QWidget):
         sb = self.chat_components['scroll'].verticalScrollBar()
         if value == 0 and self.has_more_history and not self.loading_history:
             run_async(self.load_chat_history(reset=False))
-        self._check_scroll_position()
+        asyncio.create_task(self._check_scroll_position())
         if (self.client.current_friend and
                 self.client.unread_messages.get(self.client.current_friend, 0) > 0 and
                 not self.auto_scrolling and sb.maximum() - value <= 5):
@@ -826,7 +826,7 @@ class ChatWindow(QWidget):
         if scroll:
             sb = scroll.verticalScrollBar()
             sb.setValue(sb.maximum())
-            self._check_scroll_position()
+            asyncio.create_task(self._check_scroll_position())
         self.auto_scrolling = False
 
     def adjust_scroll(self) -> None:
@@ -837,12 +837,13 @@ class ChatWindow(QWidget):
         QApplication.processEvents()
         QTimer.singleShot(0, self._scroll_to_bottom)
 
-    def _check_scroll_position(self) -> None:
+    async def _check_scroll_position(self) -> None:
         sb = self.chat_components['scroll'].verticalScrollBar()
         should_show = (self.client.current_friend and
-                       self.client.unread_messages.get(self.client.current_friend, 0) > 0 and  # 使用 client 的 unread_messages
+                       self.client.unread_messages.get(self.client.current_friend, 0) > 0 and
                        sb.maximum() - sb.value() > 50)
         self._create_scroll_button(theme_manager.current_theme)
+        # 使用同步调用代替 QTimer，减少事件循环冲突
         if should_show:
             self._position_scroll_button()
             self.scroll_to_bottom_btn.show()
@@ -925,7 +926,7 @@ class ChatWindow(QWidget):
         sb.setValue(target_scroll_value)
         QApplication.processEvents()
         self.auto_scrolling = False
-        self._check_scroll_position()
+        asyncio.create_task(self._check_scroll_position())
 
         # 触发容器的高亮动画
         bubble.highlight_container_with_animation()
@@ -1096,15 +1097,12 @@ class ChatWindow(QWidget):
             file_size_str = f"{file_size_mb:.2f} MB"
         elif file_size:
             file_size_str = file_size
-
         self.last_message_times[sender] = wt
-
         if sender == self.client.current_friend:
             if not self.chat_components.get('chat'):
                 self.setup_chat_area()
             bubble_type = file_type if msg_type == "new_media" else "text"
-            bubble = ChatBubbleWidget(
-                msg, format_time(wt), "left", False, bubble_type,
+            bubble = ChatBubbleWidget(msg, format_time(wt), "left", False, bubble_type,
                 file_id, original_file_name, thumbnail_path, file_size_str, duration,
                 rowid=rowid, reply_to=reply_to, reply_preview=reply_preview)
             self.chat_components['chat'].addBubble(bubble)
@@ -1115,11 +1113,10 @@ class ChatWindow(QWidget):
             if self.should_scroll_to_bottom():
                 self.adjust_scroll()
                 self.client.clear_unread_messages(sender)
-                asyncio.create_task(self.update_friend_list(affected_users=[sender]))  # 改为 create_task
+                await self.update_friend_list(affected_users=[sender])
             else:
-                self._check_scroll_position()
-
-        notification_msg = msg if msg_type == "new_message" else f"收到新的{file_type}: {original_file_name or '未知文件'}"
+                await self._check_scroll_position()
+        notification_msg = (msg if msg_type == "new_message" else f"收到新的{ {'image': '图片', 'video': '视频', 'file': '文件'}.get(file_type, '未知')}: {original_file_name or '未知文件'}")
         if msg and msg_type == "new_media":
             notification_msg += f"\n附加消息: {msg}"
         self.show_notification(f"用户 {sender}:", notification_msg)
@@ -1140,15 +1137,17 @@ class ChatWindow(QWidget):
         )
         return online + offline
 
-    async def update_conversations(self, friends: List[dict], affected_users: Optional[List[str]] = None, deleted_rowids: List[int] = None) -> None:
+    async def update_conversations(self, friends: List[dict], affected_users: Optional[List[str]] = None,
+                                   deleted_rowids: List[int] = None) -> None:
         chat_area = self.chat_components.get('chat')
         if affected_users:
-            asyncio.create_task(self.update_friend_list(affected_users=affected_users))
-            if self.chat_components.get("chat"):
-                asyncio.create_task(chat_area.remove_bubbles_by_rowids(deleted_rowids, show_floating_label=False))
-            print(f"删除的消息ID:{deleted_rowids}\n传入的受到影响的好友:{affected_users}")
+            # 等待好友列表更新完成
+            await self.update_friend_list(affected_users=affected_users)
+            if chat_area and deleted_rowids != None:
+                # 等待气泡移除完成
+                await chat_area.remove_bubbles_by_rowids(deleted_rowids, show_floating_label=False)
         else:
-            asyncio.create_task(self.update_friend_list(friends=friends))
+            await self.update_friend_list(friends=friends)
 
     async def update_friend_list(self, friends: Optional[List[dict]] = None, affected_users: Optional[List[str]] = None) -> None:
         """更新好友列表，避免重复创建好友项"""
@@ -1429,7 +1428,7 @@ class ChatWindow(QWidget):
                     inserted = sum(b.sizeHint().height() for b in bubbles)
                     sb.setValue(old_val + inserted)
                     self.auto_scrolling = False
-                self._check_scroll_position()
+                asyncio.create_task(self._check_scroll_position())
 
             QTimer.singleShot(0, update_and_scroll)
             self.has_more_history = len(messages) >= self.page_size
