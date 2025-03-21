@@ -181,42 +181,28 @@ class ChatAreaWidget(QWidget):
         if not deleted_rowids:
             return
 
-        removed = False
         containers_to_remove = []
-
-        # 第一步：遍历并删除所有匹配的气泡
         for container in self.bubble_containers[:]:  # 使用副本避免修改时的迭代问题
-            items_to_remove = []  # 记录需要删除的气泡
             for i in range(container.layout().count()):
-                widget = container.layout().itemAt(i).widget()
-                if isinstance(widget, ChatBubbleWidget) and widget.rowid in deleted_rowids:
-                    items_to_remove.append(widget)
+                item = container.layout().itemAt(i)
+                if item.widget() and isinstance(item.widget(),
+                                                ChatBubbleWidget) and item.widget().rowid in deleted_rowids:
+                    containers_to_remove.append(container)
+                    break  # 每个容器只有一个气泡，找到后即可退出
 
-            # 删除所有匹配的气泡
-            for widget in items_to_remove:
-                container.layout().removeWidget(widget)
-                widget.deleteLater()
-                removed = True
-
-            # 如果容器变为空，标记为待删除
-            if container.layout().count() == 0:
-                containers_to_remove.append(container)
-
-        # 第二步：清理空容器
         for container in containers_to_remove:
             self.layout().removeWidget(container)
             self.bubble_containers.remove(container)
             container.deleteLater()
 
-        # 第三步：更新界面和显示提示
-        if removed:
+        if containers_to_remove:
             self.update()
             chat_window = self.window()
             chat_area = chat_window.chat_components.get('area_widget')
             if hasattr(chat_window, 'adjust_scroll'):
                 chat_window.adjust_scroll()
             if show_floating_label:
-                floating_label = FloatingLabel(f"已删除 {len(deleted_rowids)} 条消息", chat_area)
+                floating_label = FloatingLabel(f"已删除 {len(containers_to_remove)} 条消息", chat_area)
                 floating_label.show()
                 floating_label.raise_()
 
@@ -946,7 +932,6 @@ class ChatBubbleWidget(QWidget):
             menu.exec_(self.mapToGlobal(pos))
 
     async def delete_message(self) -> None:
-        """删除当前消息，仅发送请求并显示结果，不直接操作界面"""
         chat_window = self.window()
         if not hasattr(chat_window, 'client') or not self.rowid:
             QMessageBox.critical(self, "错误", "无法删除消息：客户端未初始化或消息ID缺失")
@@ -958,19 +943,22 @@ class ChatBubbleWidget(QWidget):
             "确认删除",
             "您确定要删除这条消息吗？此操作无法撤销。"
         )
-
         if reply == QMessageBox.No:
             return
 
-        # 发送删除请求并等待服务器响应
+        # 发送删除请求
         resp = await chat_window.client.delete_messages(self.rowid)
         if resp.get("status") == "success":
-            # 不再直接移除气泡，依赖服务器推送或回调更新
-            floating_label = FloatingLabel(f"已删除 1 条消息", self.window().chat_components.get('chat'))
-            floating_label.show()
-            floating_label.raise_()
+            # 将 UI 更新放入事件循环，避免嵌套任务
+            asyncio.create_task(self._show_delete_confirmation(chat_window.chat_components.get('area_widget')))
         else:
             QMessageBox.critical(self, "错误", f"删除失败: {resp.get('message', '未知错误')}")
+
+    async def _show_delete_confirmation(self, chat_window) -> None:
+        """异步显示删除确认提示"""
+        floating_label = FloatingLabel(f"已删除 1 条消息", chat_window)
+        floating_label.show()
+        floating_label.raise_()
 
     def on_image_clicked(self, event) -> None:
         if event.button() != Qt.LeftButton or not self.file_id:

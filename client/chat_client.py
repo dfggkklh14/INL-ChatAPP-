@@ -52,13 +52,20 @@ class ChatClient:
         self.friends = []
         self.unread_messages = {}
         self.on_conversations_update_callback = None
-        self.callback_queue = asyncio.Queue()  # 仅初始化队列
+        self.callback_queue = None  # 延迟初始化
         self._init_connection()
         self.cache_root = os.path.join(os.path.dirname(__file__), "Chat_DATA")
         self.avatar_dir = os.path.join(self.cache_root, "avatars")
         self.thumbnail_dir = os.path.join(self.cache_root, "thumbnails")
         os.makedirs(self.avatar_dir, exist_ok=True)
         os.makedirs(self.thumbnail_dir, exist_ok=True)
+
+    async def start(self):
+        """在事件循环运行后初始化队列和任务"""
+        if self.callback_queue is None:
+            self.callback_queue = asyncio.Queue()  # 使用当前运行的事件循环
+        asyncio.create_task(self._process_callback_queue())
+        self.reader_task = asyncio.create_task(self.start_reader())
 
     def _init_connection(self):
         self.is_authenticated = False
@@ -127,12 +134,26 @@ class ChatClient:
 
     async def _process_callback_queue(self):
         while self.is_running:
-            callback, args, kwargs = await self.callback_queue.get()
             try:
-                await callback(*args, **kwargs)
+                if self.callback_queue is None:
+                    logging.info("_process_callback_queue: 回调队列未初始化，退出")
+                    break
+                callback, args, kwargs = await self.callback_queue.get()
+                try:
+                    await callback(*args, **kwargs)
+                except Exception as e:
+                    logging.error(f"处理回调失败: {e}")
+                finally:
+                    self.callback_queue.task_done()
+            except asyncio.CancelledError:
+                logging.info("_process_callback_queue 被取消，退出")
+                break
             except Exception as e:
-                logging.error(f"处理回调失败: {e}")
-            self.callback_queue.task_done()
+                logging.error(f"回调队列处理异常: {e}")
+                if not self.is_running:
+                    break
+                await asyncio.sleep(0.1)
+        logging.info("_process_callback_queue 已退出")
 
     async def authenticate(self, username: str, password: str) -> str:
         req = {
@@ -184,7 +205,7 @@ class ChatClient:
                 print(f"收到服务器响应: {resp}")
                 if resp.get("type") == "exit":
                     print(f"收到的退出响应: {resp}")
-                    self.is_running = False  # 主动退出循环
+                    self.is_running = False
                     req_id = resp.get("request_id")
                     if req_id in self.pending_requests:
                         self.pending_requests.pop(req_id).set_result(resp)
@@ -192,19 +213,18 @@ class ChatClient:
                 req_id = resp.get("request_id")
                 if req_id in self.pending_requests:
                     self.pending_requests.pop(req_id).set_result(resp)
-                elif resp.get("type") in ["new_message", "new_media"] and (
-                        self.on_new_message_callback or self.on_new_media_callback):
-                    await self.parsing_new_message_or_media(resp)
+                elif resp.get("type") in ["new_message", "new_media"] and (self.on_new_message_callback or self.on_new_media_callback):
+                    await self.parsing_new_message_or_media(resp)  # 保持 await，因为它会触发独立的 create_task
                 elif resp.get("type") == "friend_list_update":
                     self.friends = resp.get("friends", [])
                     if self.on_friend_list_update_callback:
                         asyncio.create_task(self.on_friend_list_update_callback(self.friends))
                     if self.on_conversations_update_callback:
                         asyncio.create_task(self.on_conversations_update_callback(self.friends))
+                elif resp.get("type") == "deleted_messages":
+                    await self.parsing_delete_message(resp)  # 保持 await，因为内部已改为 create_task
                 elif resp.get("type") == "Update_Remarks" and self.on_update_remarks_callback:
                     asyncio.create_task(self.on_update_remarks_callback(resp))
-                elif resp.get("type") == "deleted_messages":
-                    await self.parsing_delete_message(resp)
             except Exception as e:
                 logging.error(f"读取推送消息失败: {e}")
                 if not self.is_running:
@@ -444,7 +464,7 @@ class ChatClient:
         write_time = resp.get("write_time", "")
 
         # 更新对话记录
-        new_conversation = {"sender": user1, "content": conversations,"last_update_time": write_time} if conversations else None
+        new_conversation = {"sender": user1, "content": conversations, "last_update_time": write_time} if conversations else None
         for friend in self.friends:
             if friend.get("username") in (user1, user2):
                 friend["conversations"] = new_conversation
@@ -459,7 +479,7 @@ class ChatClient:
 
         # 调用回调
         if self.on_conversations_update_callback:
-            await self.on_conversations_update_callback(self.friends, affected_users, deleted_rowids)
+            asyncio.create_task(self.on_conversations_update_callback(self.friends, affected_users, deleted_rowids))
 
     async def delete_messages(self, rowids: int | List[int]) -> dict:
         if not self.is_authenticated:
@@ -617,7 +637,7 @@ class ChatClient:
         return await self.send_request(req)
 
     async def close_connection(self):
-        self.is_running = False  # 通知 start_reader 停止
+        self.is_running = False
         if self.client_socket:
             try:
                 req = {"type": "exit", "username": self.username, "request_id": str(uuid.uuid4())}
@@ -630,8 +650,25 @@ class ChatClient:
                 except Exception as e:
                     logging.error(f"关闭 socket 失败: {e}")
                 self.client_socket = None
+
+        # 取消 reader_task
+        if self.reader_task and not self.reader_task.done():
+            self.reader_task.cancel()
+            try:
+                await self.reader_task
+            except asyncio.CancelledError:
+                logging.info("reader_task 已取消")
+
+        # 清空 callback_queue 并等待任务完成
+        if self.callback_queue:
+            while not self.callback_queue.empty():
+                try:
+                    await asyncio.wait_for(self.callback_queue.get(), timeout=1.0)
+                    self.callback_queue.task_done()
+                except asyncio.TimeoutError:
+                    logging.warning("等待 callback_queue 清空超时")
+                    break
+
         self.is_authenticated = False
         self.username = None
         logging.info("客户端连接已关闭")
-        # 可选：短暂等待，确保 start_reader 退出
-        await asyncio.sleep(0.1)

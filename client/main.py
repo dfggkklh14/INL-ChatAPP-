@@ -123,8 +123,7 @@ class LoginWindow(QDialog):
         res = await self.chat_client.authenticate(username, password)
         if res == "认证成功":
             self.accept()
-            asyncio.create_task(self.chat_client._process_callback_queue())
-            run_async(self.chat_client.start_reader())
+            await self.chat_client.start()  # 在登录成功后启动
             if not self.main_app.chat_window:
                 self.main_app.chat_window = ChatWindow(self.chat_client, self.main_app)
             if not self.chat_client.on_friend_list_update_callback:
@@ -1116,7 +1115,7 @@ class ChatWindow(QWidget):
             if self.should_scroll_to_bottom():
                 self.adjust_scroll()
                 self.client.clear_unread_messages(sender)
-                await self.update_friend_list(affected_users=[sender])  # 精准更新发送者
+                asyncio.create_task(self.update_friend_list(affected_users=[sender]))  # 改为 create_task
             else:
                 self._check_scroll_position()
 
@@ -1145,7 +1144,8 @@ class ChatWindow(QWidget):
         chat_area = self.chat_components.get('chat')
         if affected_users:
             asyncio.create_task(self.update_friend_list(affected_users=affected_users))
-            asyncio.create_task(chat_area.remove_bubbles_by_rowids(deleted_rowids, show_floating_label=False))
+            if self.chat_components.get("chat"):
+                asyncio.create_task(chat_area.remove_bubbles_by_rowids(deleted_rowids, show_floating_label=False))
             print(f"删除的消息ID:{deleted_rowids}\n传入的受到影响的好友:{affected_users}")
         else:
             asyncio.create_task(self.update_friend_list(friends=friends))
@@ -1650,33 +1650,25 @@ class ChatApp:
     def quit_app(self) -> None:
         async def shutdown():
             try:
-                # 关闭客户端连接
-                if self.login_window.chat_client and self.login_window.chat_client.client_socket:
+                if self.login_window.chat_client:
                     await self.login_window.chat_client.close_connection()
 
-                # 关闭所有窗口
+                tasks = [t for t in asyncio.all_tasks(self.loop) if not t.done()]
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    try:
+                        await asyncio.wait(tasks, timeout=2.0)
+                        logging.info(f"已取消 {len(tasks)} 个异步任务")
+                    except Exception as e:
+                        logging.error(f"等待任务取消失败: {e}")
+
                 if self.chat_window:
-                    await self.chat_window.client.close_connection()
                     self.chat_window.close()
                 if self.login_window:
                     self.login_window.close()
 
-                # 逐步取消任务，避免递归深度超限
-                tasks = [t for t in asyncio.all_tasks(self.loop) if not t.done()]
-                for task in tasks:
-                    try:
-                        task.cancel()
-                    except Exception as e:
-                        logging.error(f"取消任务 {task} 失败: {e}")
-                if tasks:
-                    try:
-                        await asyncio.wait(tasks, timeout=2.0)  # 设置超时，避免无限等待
-                    except Exception as e:
-                        logging.error(f"等待任务完成失败: {e}")
-
-                # 清理系统托盘
                 self.tray_icon.hide()
-
             except Exception as e:
                 logging.error(f"退出时发生错误: {e}")
             finally:
