@@ -270,6 +270,40 @@ class ChatWindow(QWidget):
         info_btn.clicked.connect(lambda: run_async(self.show_user_info()))
         layout.addWidget(info_btn)
 
+        # 添加退出按钮
+        self.logout_button = QPushButton(self)
+        self.logout_button.setFixedHeight(30)
+        StyleGenerator.apply_style(self.logout_button, "button", extra="border-radius: 4px;")
+        self.logout_button.setIcon(QIcon(resource_path("icon/quit_icon.ico")))
+        self.logout_button.setIconSize(QSize(15, 15))
+        self.logout_button.clicked.connect(self.on_logout)
+        layout.addWidget(self.logout_button)
+
+    def on_logout(self):
+        async def async_logout():
+            # 发送退出请求
+            if self.client:
+                await self.client.logout()
+
+            # 关闭当前窗口
+            self.close()
+
+            # 清理客户端状态
+            self.client.is_authenticated = False
+            self.client.username = None
+            self.client.current_friend = None
+
+            # 重新创建登录窗口
+            self.main_app.login_window = LoginWindow(self.main_app)
+            self.main_app.login_window.show()
+
+            # 清理聊天窗口
+            if self.main_app.chat_window:
+                self.main_app.chat_window.deleteLater()
+                self.main_app.chat_window = None
+
+        run_async(async_logout())
+
     def toggle_theme_mode(self) -> None:
         # 切换到下一个模式
         self.current_mode_index = (self.current_mode_index + 1) % len(self.modes)
@@ -1621,9 +1655,10 @@ class ChatApp:
                     await self.login_window.chat_client.close_connection()
 
                 # 关闭所有窗口
-                if self.chat_window and not sip.isdeleted(self.chat_window):
+                if self.chat_window:
+                    await self.chat_window.client.close_connection()
                     self.chat_window.close()
-                if self.login_window and not sip.isdeleted(self.login_window):
+                if self.login_window:
                     self.login_window.close()
 
                 # 逐步取消任务，避免递归深度超限

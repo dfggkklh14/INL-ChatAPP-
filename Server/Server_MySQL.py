@@ -963,34 +963,6 @@ def add_friend(request: dict, client_sock: socket.socket) -> dict:
         push_friends_update(friend)
     return response
 
-
-def logout(request: dict, client_sock: socket.socket) -> dict:
-    """处理用户退出登录"""
-    username = request.get("username")
-    request_id = request.get("request_id")
-
-    response = {
-        "type": "logout",
-        "status": "success",
-        "message": f"{username} 已退出登录",
-        "request_id": request_id
-    }
-
-    with clients_lock:
-        if username in clients and clients[username] == client_sock:
-            del clients[username]
-            logging.info(f"用户 {username} 主动退出登录")
-            push_friends_update(username)
-        else:
-            response = {
-                "type": "logout",
-                "status": "error",
-                "message": "用户未登录或会话不匹配",
-                "request_id": request_id
-            }
-    send_response(client_sock, response)
-    return response
-
 def handle_client(client_sock: socket.socket, client_addr):
     """处理客户端连接"""
     logging.info(f"客户端 {client_addr} 已连接")
@@ -1041,11 +1013,6 @@ def handle_client(client_sock: socket.socket, client_addr):
                 response = update_friend_remarks(request, client_sock)
             elif req_type == "delete_messages":
                 response = delete_messages(request, client_sock)
-            elif req_type == "logout":  # 新增退出登录处理
-                response = logout(request, client_sock)
-                if response.get("status") == "success":
-                    logged_in_user = None
-                    break  # 退出循环，关闭连接
             elif req_type == "exit":
                 response = {"type": "exit", "status": "success", "message": f"{request.get('username')} 已退出", "request_id": request.get("request_id")}
                 send_response(client_sock, response)
@@ -1064,15 +1031,14 @@ def handle_client(client_sock: socket.socket, client_addr):
             with clients_lock:
                 if logged_in_user in clients and clients[logged_in_user] == client_sock:
                     del clients[logged_in_user]
-                    logging.info(f"用户 {logged_in_user} 已退出（连接断开）")
+                    logging.info(f"用户 {logged_in_user} 已退出")
             push_friends_update(logged_in_user)
         else:
             with clients_lock:
                 for user, sock in list(clients.items()):
                     if sock == client_sock:
                         del clients[user]
-                        logging.info(f"用户 {user} 已退出（连接断开）")
-                        push_friends_update(user)
+                        logging.info(f"用户 {user} 已退出")
                         break
         client_sock.close()
         logging.info(f"关闭连接：{client_addr}")

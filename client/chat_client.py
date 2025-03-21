@@ -172,7 +172,7 @@ class ChatClient:
         return friend_username
 
     async def start_reader(self):
-        while True:
+        while self.is_running:
             try:
                 header = await self._recv_async(4)
                 if len(header) < 4:
@@ -182,7 +182,13 @@ class ChatClient:
                 encrypted_payload = await self._recv_async(length)
                 resp = self._decrypt(encrypted_payload)
                 print(f"收到服务器响应: {resp}")
-
+                if resp.get("type") == "exit":
+                    print(f"收到的退出响应: {resp}")
+                    self.is_running = False  # 主动退出循环
+                    req_id = resp.get("request_id")
+                    if req_id in self.pending_requests:
+                        self.pending_requests.pop(req_id).set_result(resp)
+                    break
                 req_id = resp.get("request_id")
                 if req_id in self.pending_requests:
                     self.pending_requests.pop(req_id).set_result(resp)
@@ -204,6 +210,7 @@ class ChatClient:
                 if not self.is_running:
                     break
                 await asyncio.sleep(1)
+        logging.info("start_reader 已退出循环")
 
     async def parsing_new_message_or_media(self, resp: dict):
         """解析并处理新消息或媒体通知，直接更新 self.friends"""
@@ -601,15 +608,16 @@ class ChatClient:
             res["errors"] = errors
         return res
 
-    async def close_connection(self):
-        self.is_running = False  # 先停止 reader
-        if self.reader_task and not self.reader_task.done():
-            try:
-                self.reader_task.cancel()
-                await asyncio.wait([self.reader_task], timeout=1.0)  # 等待 reader 退出
-            except Exception as e:
-                logging.error(f"取消 reader 任务失败: {e}")
+    async def logout(self) -> dict:
+        req = {
+            "type": "exit",
+            "username": self.username,
+            "request_id": str(uuid.uuid4())
+        }
+        return await self.send_request(req)
 
+    async def close_connection(self):
+        self.is_running = False  # 通知 start_reader 停止
         if self.client_socket:
             try:
                 req = {"type": "exit", "username": self.username, "request_id": str(uuid.uuid4())}
@@ -625,3 +633,5 @@ class ChatClient:
         self.is_authenticated = False
         self.username = None
         logging.info("客户端连接已关闭")
+        # 可选：短暂等待，确保 start_reader 退出
+        await asyncio.sleep(0.1)
