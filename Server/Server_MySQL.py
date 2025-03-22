@@ -529,7 +529,8 @@ def send_message(request: dict, client_sock: socket.socket) -> dict:
             "rowid": rowid,
             "reply_to": reply_to,
             "reply_preview": reply_preview,
-            "conversations": conversations
+            "conversations": conversations,
+            "write_time": current_time
         }
     except Error as e:
         logging.error(f"发送消息失败: {e}")
@@ -812,7 +813,8 @@ def delete_messages(request: dict, client_sock: socket.socket) -> dict:
                 "to": user2 if user1 == username else user1,
                 "deleted_rowids": [msg['id'] for msg in messages_to_delete],
                 "conversations": conversations_content,
-                "write_time": write_time
+                "write_time": write_time,
+                "show_floating_label": False
             }
             # 推送给会话另一方
             other_user = user2 if user1 == username else user1
@@ -827,7 +829,8 @@ def delete_messages(request: dict, client_sock: socket.socket) -> dict:
             "to": username,
             "deleted_rowids": [msg['id'] for msg in messages_to_delete],
             "conversations": conversations_content,
-            "write_time": write_time
+            "write_time": write_time,
+            "show_floating_label": True
         }
         # 返回响应
         logging.debug(f"delete_message返回:{return_data}\ndelete_message推送:{push_payload}")

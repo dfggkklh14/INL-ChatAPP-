@@ -10,7 +10,7 @@ import asyncio
 import base64
 from typing import List, Optional, Callable
 
-from PyQt5.QtCore import QBuffer
+from PyQt5.QtCore import QBuffer, QObject, pyqtSignal
 from PyQt5.QtGui import QPixmap
 from cryptography.fernet import Fernet
 
@@ -38,8 +38,16 @@ ENCRYPTION_KEY = load_encryption_key()
 fernet = Fernet(ENCRYPTION_KEY)
 
 
-class ChatClient:
+class ChatClient(QObject):
+    # 定义所有信号
+    friend_list_updated = pyqtSignal(list)           # 好友列表更新
+    conversations_updated = pyqtSignal(list, list, list, bool)  # 对话更新，参数：friends, affected_users, deleted_rowids
+    new_message_received = pyqtSignal(dict)          # 新消息接收
+    new_media_received = pyqtSignal(dict)            # 新媒体接收
+    remarks_updated = pyqtSignal(dict)               # 备注更新
+
     def __init__(self, host='26.102.137.22', port=13746):
+        super().__init__()
         self.config = {
             'host': host,
             'port': port,
@@ -51,20 +59,16 @@ class ChatClient:
         self.lock = asyncio.Lock()
         self.friends = []
         self.unread_messages = {}
-        self.on_conversations_update_callback = None
-        self.callback_queue = None  # 延迟初始化
-        self._init_connection()
         self.cache_root = os.path.join(os.path.dirname(__file__), "Chat_DATA")
         self.avatar_dir = os.path.join(self.cache_root, "avatars")
         self.thumbnail_dir = os.path.join(self.cache_root, "thumbnails")
         os.makedirs(self.avatar_dir, exist_ok=True)
         os.makedirs(self.thumbnail_dir, exist_ok=True)
+        self.chat_window = None
+        self._init_connection()
 
     async def start(self):
-        """在事件循环运行后初始化队列和任务"""
-        if self.callback_queue is None:
-            self.callback_queue = asyncio.Queue()  # 使用当前运行的事件循环
-        asyncio.create_task(self._process_callback_queue())
+        """直接启动读取任务"""
         self.reader_task = asyncio.create_task(self.start_reader())
 
     def _init_connection(self):
@@ -73,10 +77,6 @@ class ChatClient:
         self.client_socket = None
         self.send_lock = asyncio.Lock()
         self.pending_requests = {}
-        self.on_new_message_callback = None
-        self.on_friend_list_update_callback = None
-        self.on_new_media_callback = None
-        self.on_update_remarks_callback = None
         self.reply_to_id = None
         self._connect()
 
@@ -132,29 +132,6 @@ class ChatClient:
             data += chunk
         return data
 
-    async def _process_callback_queue(self):
-        while self.is_running:
-            try:
-                if self.callback_queue is None:
-                    logging.info("_process_callback_queue: 回调队列未初始化，退出")
-                    break
-                callback, args, kwargs = await self.callback_queue.get()
-                try:
-                    await callback(*args, **kwargs)
-                except Exception as e:
-                    logging.error(f"处理回调失败: {e}")
-                finally:
-                    self.callback_queue.task_done()
-            except asyncio.CancelledError:
-                logging.info("_process_callback_queue 被取消，退出")
-                break
-            except Exception as e:
-                logging.error(f"回调队列处理异常: {e}")
-                if not self.is_running:
-                    break
-                await asyncio.sleep(0.1)
-        logging.info("_process_callback_queue 已退出")
-
     async def authenticate(self, username: str, password: str) -> str:
         req = {
             "type": "authenticate",
@@ -182,8 +159,7 @@ class ChatClient:
                 if f.get("username") == friend:
                     f["name"] = remarks
                     break
-            if self.on_friend_list_update_callback:
-                await self.on_friend_list_update_callback(self.friends)
+            self.friend_list_updated.emit(self.friends)
         return resp
 
     def get_friend_remarks(self, friend_username: str) -> str:
@@ -211,15 +187,15 @@ class ChatClient:
                 req_id = resp.get("request_id")
                 if req_id in self.pending_requests:
                     self.pending_requests.pop(req_id).set_result(resp)
-                elif resp.get("type") in ["new_message", "new_media"] and (self.on_new_message_callback or self.on_new_media_callback):
+                elif resp.get("type") in ["new_message", "new_media"]:
                     await self.parsing_new_message_or_media(resp)
                 elif resp.get("type") == "friend_list_update":
                     self.friends = resp.get("friends", [])
-                    await self.on_friend_list_update_callback(self.friends)
+                    self.friend_list_updated.emit(self.friends)
                 elif resp.get("type") == "deleted_messages":
                     await self.parsing_delete_message(resp)
-                elif resp.get("type") == "Update_Remarks" and self.on_update_remarks_callback:
-                    await self.on_update_remarks_callback(resp)
+                elif resp.get("type") == "Update_Remarks":
+                    self.remarks_updated.emit(resp)
             except Exception as e:
                 logging.error(f"读取推送消息失败: {e}")
                 if not self.is_running:
@@ -228,21 +204,17 @@ class ChatClient:
         logging.info("start_reader 已退出循环")
 
     async def parsing_new_message_or_media(self, resp: dict):
-        """解析并处理新消息或媒体通知，直接更新 self.friends"""
         sender = resp.get("from", "")
         if not sender:
             return
 
-        # 查找并更新对应的好友项
         for friend in self.friends:
             if friend.get("username") == sender:
                 if resp.get("type") == "new_media":
                     file_id = resp.get("file_id")
                     file_type = resp.get("file_type")
-                    thumbnail_data = resp.get("thumbnail_data")  # 获取推送的缩略图数据
+                    thumbnail_data = resp.get("thumbnail_data")
                     save_path = os.path.join(self.thumbnail_dir, f"{file_id}")
-
-                    # 如果有 thumbnail_data，则解码并保存
                     if thumbnail_data and not os.path.exists(save_path):
                         try:
                             thumbnail_bytes = base64.b64decode(thumbnail_data)
@@ -251,14 +223,13 @@ class ChatClient:
                             logging.debug(f"保存缩略图: file_id={file_id}, save_path={save_path}")
                         except Exception as e:
                             logging.error(f"保存缩略图失败: file_id={file_id}, error={e}")
-
-                    resp["thumbnail_local_path"] = save_path  # 添加本地路径到响应
+                    resp["thumbnail_local_path"] = save_path
                     friend["conversations"] = {
                         "sender": resp.get("from"),
                         "content": resp.get("conversations", f"[{resp.get('file_type', '文件')}]"),
                         "last_update_time": resp.get("write_time", "")
                     }
-                else:  # 新消息
+                else:
                     friend["conversations"] = {
                         "sender": resp.get("from"),
                         "content": resp.get("message", ""),
@@ -266,9 +237,8 @@ class ChatClient:
                     }
                 break
 
-        # 判断是否需要增加未读消息计数
         should_increment_unread = True
-        if sender == self.current_friend and self.on_new_message_callback:
+        if sender == self.current_friend:
             chat_window = self._get_chat_window()
             if chat_window and chat_window.isVisible() and not chat_window.isMinimized():
                 scroll = chat_window.chat_components.get('scroll')
@@ -279,21 +249,19 @@ class ChatClient:
         if should_increment_unread:
             self.unread_messages[sender] = self.unread_messages.get(sender, 0) + 1
 
-        # 触发对话更新回调
-        if self.on_conversations_update_callback:
-            asyncio.create_task(self.on_conversations_update_callback(self.friends, affected_users=[sender]))
-        # 根据消息类型触发特定回调
-        if resp.get("type") == "new_message" and self.on_new_message_callback:
-            asyncio.create_task(self.on_new_message_callback(resp))
-        elif resp.get("type") == "new_media" and self.on_new_media_callback:
-            logging.debug(f"触发新媒体回调: {resp}")
-            asyncio.create_task(self.on_new_media_callback(resp))
+        # 发射对话更新信号
+        self.conversations_updated.emit(self.friends, [sender], [], False)
+
+        # 根据消息类型发射特定信号
+        if resp.get("type") == "new_message":
+            self.new_message_received.emit(resp)
+        elif resp.get("type") == "new_media":
+            logging.debug(f"发射新媒体信号: {resp}")
+            self.new_media_received.emit(resp)
 
     def _get_chat_window(self):
         """辅助方法：获取 ChatWindow 实例"""
-        if hasattr(self.on_new_message_callback, '__self__'):
-            return self.on_new_message_callback.__self__
-        return None
+        return getattr(self, 'chat_window', None)
 
     def clear_unread_messages(self, friend: str):
         if friend in self.unread_messages:
@@ -387,13 +355,17 @@ class ChatClient:
         if resp.get("status") == "success":
             for friend in self.friends:
                 if friend.get("username") == to_user:
-                    friend["conversations"] = {"sender": self.username, "content": resp.get("conversations", message), "last_update_time": resp.get("write_time", "")}
+                    friend["conversations"] = {
+                        "sender": self.username,
+                        "content": resp.get("conversations", message),
+                        "last_update_time": resp.get("write_time", "")
+                    }
                     break
-            asyncio.create_task(self.on_conversations_update_callback(self.friends))
+            self.conversations_updated.emit(self.friends, [to_user], [], False)
         return resp
 
     async def send_media(self, to_user: str, file_path: str, file_type: str, reply_to: Optional[int] = None,
-                         message: str = "", progress_callback=None) -> dict:
+                         message: str = "", progress_callback: Optional[Callable] = None) -> dict:
         try:
             original_file_name = os.path.basename(file_path)
             request_id = str(uuid.uuid4())
@@ -418,14 +390,18 @@ class ChatClient:
                     response["message"] = response["text_message"]
                 for friend in self.friends:
                     if friend.get("username") == to_user:
-                        friend["conversations"] = {"sender": self.username, "content": response.get("conversations", f"[{file_type}]"), "last_update_time": response.get("write_time", "")}
+                        friend["conversations"] = {
+                            "sender": self.username,
+                            "content": response.get("conversations", f"[{file_type}]"),
+                            "last_update_time": response.get("write_time", "")
+                        }
                         break
-                asyncio.create_task(self.on_conversations_update_callback(self.friends))
+                self.conversations_updated.emit(self.friends, [to_user], [], False)
             return response
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    async def send_multiple_media(self, to_user: str, file_paths: List[str], progress_callback=None,
+    async def send_multiple_media(self, to_user: str, file_paths: List[str], progress_callback: Optional[Callable] = None,
                                   message: str = "", reply_to: Optional[int] = None) -> List[dict]:
         tasks = []
         for file_path in file_paths:
@@ -434,8 +410,8 @@ class ChatClient:
                 self.send_media(to_user, file_path, file_type, reply_to, message, progress_callback))
             tasks.append(task)
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        return [result if not isinstance(result, Exception) else {"status": "error", "message": str(result)} for result
-                in results]
+        processed_results = [result if not isinstance(result, Exception) else {"status": "error", "message": str(result)} for result in results]
+        return processed_results
 
     def _detect_file_type(self, file_path: str) -> str:
         image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.ico'}
@@ -457,24 +433,21 @@ class ChatClient:
             user1 = resp.get("to")
         conversations = resp.get("conversations", "")
         write_time = resp.get("write_time", "")
+        show_floating_label = resp.get("show_floating_label", False)  # 获取新字段，默认 False
 
-        # 更新对话记录
-        new_conversation = {"sender": user1, "content": conversations, "last_update_time": write_time} if conversations else None
+        new_conversation = {"sender": user1, "content": conversations,
+                            "last_update_time": write_time} if conversations else None
         for friend in self.friends:
             if friend.get("username") in (user1, user2):
                 friend["conversations"] = new_conversation
 
-        # 处理 deleted_rowids
         deleted_rowids = resp.get("deleted_rowids", [])
         if not isinstance(deleted_rowids, list):
             deleted_rowids = [deleted_rowids]
 
-        # 只将 to_user 作为受影响的用户
         affected_users = [user2] if user2 else []
-
-        # 调用回调
-        if self.on_conversations_update_callback:
-            asyncio.create_task(self.on_conversations_update_callback(self.friends, affected_users, deleted_rowids))
+        # 传递 show_floating_label 给信号
+        self.conversations_updated.emit(self.friends, affected_users, deleted_rowids, show_floating_label)
 
     async def delete_messages(self, rowids: int | List[int]) -> dict:
         if not self.is_authenticated:
@@ -653,16 +626,6 @@ class ChatClient:
                 await self.reader_task
             except asyncio.CancelledError:
                 logging.info("reader_task 已取消")
-
-        # 清空 callback_queue 并等待任务完成
-        if self.callback_queue:
-            while not self.callback_queue.empty():
-                try:
-                    await asyncio.wait_for(self.callback_queue.get(), timeout=1.0)
-                    self.callback_queue.task_done()
-                except asyncio.TimeoutError:
-                    logging.warning("等待 callback_queue 清空超时")
-                    break
 
         self.is_authenticated = False
         self.username = None

@@ -424,6 +424,7 @@ class FriendItemWidget(QWidget):
 
         # 未读消息徽标
         self.badge_label = QLabel(self)
+        self.badge_label.setStyleSheet("background:transparent")
 
         layout.addWidget(self.avatar_container)
         layout.addLayout(right_layout)
