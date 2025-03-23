@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import asyncio
@@ -6,9 +7,10 @@ from typing import Optional, Any, Tuple, List
 
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QSize, QRect, QPoint, pyqtSignal, QPropertyAnimation, QObject, QEvent
-from PyQt5.QtGui import QPainter, QFont, QFontMetrics, QPixmap, QImage, QIcon, QPainterPath, QColor
+from PyQt5.QtGui import QPainter, QFont, QFontMetrics, QPixmap, QImage, QIcon, QPainterPath, QColor, QWheelEvent
 from PyQt5.QtWidgets import (
-    QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QPushButton, QApplication, QMessageBox, QMenu, QFileDialog, QSizePolicy, QProgressBar)
+    QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QPushButton, QApplication, QMessageBox, QMenu, QFileDialog,
+    QSizePolicy, QProgressBar, QListWidgetItem, QListWidget)
 
 from Interface_Controls import LIGHT_THEME, FONTS, StyleGenerator, resource_path, theme_manager, FloatingLabel
 
@@ -48,25 +50,31 @@ def create_confirmation_dialog(parent: QWidget, title: str, message: str) -> int
     # 执行并返回结果
     return msg_box.exec_()
 
-class ChatAreaWidget(QWidget):
+class ChatAreaWidget(QListWidget):
     """
-    聊天区域控件，用于容纳聊天气泡。
+    基于 QListWidget 的聊天区域控件，用于容纳聊天气泡。
     """
     newBubblesAdded = pyqtSignal()
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignTop)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
-        self.bubble_containers: List[QWidget] = []
-        self.selected_containers: List[QWidget] = []  # 跟踪选中的容器
-        self.setLayout(layout)
-        self.newBubblesAdded.connect(self.update)
-        ChatBubbleWidget.config.chat_area_width = self.width() or 650
+        self.setSelectionMode(QListWidget.MultiSelection)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setVerticalScrollMode(QListWidget.ScrollPerPixel)  # 已启用像素级滚动
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setAcceptDrops(True)
+        self.bubble_items = []
+        self.selected_items = []
+        ChatBubbleWidget.config.chat_area_width = self.width() or 650
         theme_manager.register(self)
+        self.update_theme(theme_manager.current_theme)
+        self._scroll_animation = None
+
+        # 设置滚动条的单步值和页面步长
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setSingleStep(20)  # 每次滚动 20 像素
+        scrollbar.setPageStep(60)   # 页面滚动步长设为 60 像素
+        self.setSpacing(3)
 
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
@@ -83,50 +91,47 @@ class ChatAreaWidget(QWidget):
                 event.acceptProposedAction()
 
     def mousePressEvent(self, event: QEvent) -> None:
-        """在多选模式下处理鼠标左键点击"""
         chat_window = self.window()
         if (hasattr(chat_window, 'is_selection_mode') and chat_window.is_selection_mode and
                 event.button() == Qt.LeftButton):
-            container = self.childAt(event.pos())
-            if container in self.bubble_containers:
-                self.toggle_container_selection(container)
+            item = self.itemAt(event.pos())
+            if item and item in self.bubble_items:
+                self.toggle_item_selection(item)
                 event.accept()
                 return
         super().mousePressEvent(event)
 
-    def toggle_container_selection(self, container: QWidget) -> None:
-        """切换容器的选中状态"""
+    def toggle_item_selection(self, item: QListWidgetItem) -> None:
         chat_bg = theme_manager.current_theme["chat_bg"]
-        if container in self.selected_containers:
-            self.selected_containers.remove(container)
+        container = self.itemWidget(item)
+        if item in self.selected_items:
+            self.selected_items.remove(item)
             container.setStyleSheet(f"background-color: {chat_bg};")
+            item.setSelected(False)
         else:
-            self.selected_containers.append(container)
+            self.selected_items.append(item)
             container.setStyleSheet("background-color: #bbbbbb;")
-        self.update()
+            item.setSelected(True)
+        self.viewport().update()
 
     def clear_selection(self) -> None:
-        """清除所有选中状态"""
         chat_bg = theme_manager.current_theme["chat_bg"]
-        for container in self.selected_containers:
+        for item in self.selected_items:
+            container = self.itemWidget(item)
             container.setStyleSheet(f"background-color: {chat_bg};")
-        self.selected_containers.clear()
-        self.update()
+            item.setSelected(False)
+        self.selected_items.clear()
+        self.viewport().update()
 
-    def get_selected_rowids(self) -> List[int]:
-        """获取选中消息的 rowid 列表"""
+    def get_selected_rowids(self) -> list[int]:
         rowids = []
-        for container in self.selected_containers:
-            for i in range(container.layout().count()):
-                widget = container.layout().itemAt(i).widget()
-                if isinstance(widget, ChatBubbleWidget) and widget.rowid:
-                    rowids.append(widget.rowid)
+        for item in self.selected_items:
+            bubble = next((w for w in self.itemWidget(item).children() if isinstance(w, ChatBubbleWidget)), None)
+            if bubble and bubble.rowid:
+                rowids.append(bubble.rowid)
         return rowids
 
     def _wrap_bubble(self, bubble: QWidget) -> QWidget:
-        """
-        根据气泡对齐方式，将气泡包装到水平布局容器中。
-        """
         container = QWidget(self)
         hl = QHBoxLayout(container)
         hl.setContentsMargins(0, 0, 0, 0)
@@ -137,7 +142,6 @@ class ChatAreaWidget(QWidget):
         else:
             hl.addWidget(bubble)
             hl.addStretch()
-        # 使用 theme_manager 获取 chat_bg
         chat_bg = theme_manager.current_theme["chat_bg"]
         container.setStyleSheet(f"background-color: {chat_bg};")
         container.installEventFilter(bubble)
@@ -145,64 +149,98 @@ class ChatAreaWidget(QWidget):
 
     def addBubble(self, bubble: QWidget) -> None:
         container = self._wrap_bubble(bubble)
-        self.layout().addWidget(container)
-        self.bubble_containers.append(container)
-        bubble.updateBubbleSize()
-        QApplication.processEvents()
-        self.update()
+        item = QListWidgetItem(self)
+        item.setSizeHint(bubble.sizeHint())
+        self.setItemWidget(item, container)
+        self.bubble_items.append(item)  # 改为追加到末尾
 
-    def addBubbles(self, bubbles: List[QWidget]) -> None:
+    def addBubbles(self, bubbles: list[QWidget]) -> None:
         for bubble in bubbles:
             container = self._wrap_bubble(bubble)
-            self.bubble_containers.insert(0, container)
-            self.layout().insertWidget(0, container)
-            bubble.updateBubbleSize()
+            item = QListWidgetItem(self)
+            item.setSizeHint(bubble.sizeHint())
+            self.setItemWidget(item, container)
+            self.bubble_items.append(item)  # 改为追加到末尾
         self.newBubblesAdded.emit()
 
-    def resizeEvent(self, event: Any) -> None:
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        scrollbar = self.verticalScrollBar()
+        delta = event.angleDelta().y()
+        step = 100
+
+        scroll_amount = -(delta // 100) * step
+        current_value = scrollbar.value()
+        target_value = max(scrollbar.minimum(), min(current_value + scroll_amount, scrollbar.maximum()))
+
+        # 使用动画平滑滚动
+        if self._scroll_animation:
+            self._scroll_animation.stop()
+        self._scroll_animation = QPropertyAnimation(scrollbar, b"value")
+        self._scroll_animation.setDuration(50)  # 动画持续时间 150ms
+        self._scroll_animation.setStartValue(current_value)
+        self._scroll_animation.setEndValue(target_value)
+        self._scroll_animation.start()
+
+        event.accept()
+
+    def resizeEvent(self, event) -> None:
         ChatBubbleWidget.config.chat_area_width = self.width()
-        for container in self.bubble_containers:
-            for i in range(container.layout().count()):
-                widget = container.layout().itemAt(i).widget()
+        for item in self.bubble_items:
+            container = self.itemWidget(item)
+            for widget in container.children():
                 if isinstance(widget, ChatBubbleWidget):
                     widget.updateBubbleSize()
+                    item.setSizeHint(widget.sizeHint())
         super().resizeEvent(event)
 
     def update_theme(self, theme: dict) -> None:
         chat_bg = theme["chat_bg"]
         self.setStyleSheet(f"background-color: {chat_bg};")
-        # 更新未选中容器的背景色
-        for container in self.bubble_containers:
-            if container not in self.selected_containers:
+        for item in self.bubble_items:
+            if item not in self.selected_items:
+                container = self.itemWidget(item)
                 container.setStyleSheet(f"background-color: {chat_bg};")
-        self.update()
+        self.viewport().update()
 
-    async def remove_bubbles_by_rowids(self, deleted_rowids: List[int], show_floating_label: bool = True) -> None:
+    async def remove_bubbles_by_rowids(self, deleted_rowids: list[int], show_floating_label: bool = True) -> None:
+        logging.debug(f"Entering remove_bubbles_by_rowids with deleted_rowids: {deleted_rowids}")
         if not deleted_rowids:
+            logging.debug("No rowids to delete, exiting")
             return
+        items_to_remove = []
+        for item in self.bubble_items[:]:
+            container = self.itemWidget(item)
+            bubble = next((w for w in container.children() if isinstance(w, ChatBubbleWidget)),
+                          None) if container else None
+            if bubble and bubble.rowid in deleted_rowids:
+                logging.debug(f"Found bubble to remove: rowid={bubble.rowid}")
+                items_to_remove.append(item)
 
-        containers_to_remove = []
-        for container in self.bubble_containers[:]:  # 使用副本避免修改时的迭代问题
-            for i in range(container.layout().count()):
-                item = container.layout().itemAt(i)
-                if item.widget() and isinstance(item.widget(),
-                                                ChatBubbleWidget) and item.widget().rowid in deleted_rowids:
-                    containers_to_remove.append(container)
-                    break  # 每个容器只有一个气泡，找到后即可退出
+        for item in items_to_remove:
+            row = self.row(item)
+            container = self.itemWidget(item)  # 再次获取 container
+            bubble = next((w for w in container.children() if isinstance(w, ChatBubbleWidget)),  None) if container else None
+            logging.debug(f"Removing item at row {row} with rowid {bubble.rowid if bubble else 'None'}")
+            if row != -1:  # 确保 item 仍在列表中
+                self.takeItem(row)
+                self.bubble_items.remove(item)
+                if item in self.selected_items:
+                    self.selected_items.remove(item)
+                if container and not sip.isdeleted(container):
+                    container.deleteLater()
+                else:
+                    logging.warning(
+                        f"Container is None or deleted for item with rowid {bubble.rowid if bubble else 'Unknown'}")
 
-        for container in containers_to_remove:
-            self.layout().removeWidget(container)
-            self.bubble_containers.remove(container)
-            container.deleteLater()
-
-        if containers_to_remove:
-            self.update()
+        if items_to_remove:
+            logging.debug(f"Removed {len(items_to_remove)} items")
+            self.viewport().update()
             chat_window = self.window()
             chat_area = chat_window.chat_components.get('area_widget')
             if hasattr(chat_window, 'adjust_scroll'):
                 chat_window.adjust_scroll()
-            if show_floating_label:
-                floating_label = FloatingLabel(f"已删除 {len(containers_to_remove)} 条消息", chat_area)
+            if show_floating_label and chat_area:
+                floating_label = FloatingLabel(f"已删除 {len(items_to_remove)} 条消息", chat_area)
                 floating_label.show()
                 floating_label.raise_()
 
@@ -658,12 +696,16 @@ class ChatBubbleWidget(QWidget):
         reply_gap = v_padding if self.reply_container else 0
         message_gap = v_padding if self.message_text_edit else 0
         extra_height = self.progress_bar.height() if (self.progress_bar and self.progress_bar.isVisible()) else 0
+        time_gap = v_padding  # 为时间戳预留额外的间距
+
         bubble_height = (top_margin +
                          (reply_size.height() if self.reply_container else 0) +
                          reply_gap +
                          content_size.height() +
                          (message_size.height() + message_gap if self.message_text_edit else 0) +
-                         extra_height)
+                         extra_height +
+                         time_size.height() + time_gap)  # 增加时间戳高度和间距
+
         bubble_size = QSize(bubble_width, bubble_height)
 
         return bubble_size, content_size, time_size, content_width, reply_size
@@ -673,7 +715,6 @@ class ChatBubbleWidget(QWidget):
         base_offset = 0 if self.align == "right" else self.config.triangle_size
         bx = base_offset + (1 if self.is_current_user else -1)
 
-        # 更新气泡矩形
         self._bubble_rect = QRect(bx, 0, bubble_size.width(), bubble_size.height())
         h_padding, v_padding = self._getPadding()
         top_margin = v_padding
@@ -700,42 +741,33 @@ class ChatBubbleWidget(QWidget):
         # 计算附加消息位置
         message_y_offset = content_y + content_size.height()
         if self.message_text_edit:
-            # 获取消息尺寸
             doc = self.message_text_edit.document()
             message_width = int(doc.idealWidth())
-            message_height = int(doc.size().height())  # 正确计算消息高度
-            # 判断是否为短消息
+            message_height = int(doc.size().height())
             is_short = self._is_short_message(message_width)
-            # 动态设置对齐方式
             alignment = Qt.AlignRight if (self.align == "left" and is_short) else Qt.AlignLeft
             self.message_text_edit.setAlignment(alignment)
-            # 调整X坐标
             message_x = bx + h_padding
             if self.align == "left" and is_short:
                 message_x = bx + self._bubble_rect.width() - message_width - h_padding
-            # 应用坐标和尺寸
             self.message_text_edit.move(int(message_x), int(message_y_offset))
-            self.message_text_edit.setFixedSize(message_width, message_height)  # 使用已计算的message_height
-            # 更新偏移量（修正变量名）
-            message_y_offset += message_height  # 使用 += 代替错误变量名
+            self.message_text_edit.setFixedSize(message_width, message_height)
+            message_y_offset += message_height + v_padding  # 确保时间戳不会覆盖附加消息
+
         # 计算时间戳或进度条位置
         total_content_height = message_y_offset if self.message_text_edit else content_y + content_size.height()
-        time_y = total_content_height
-        # 根据消息来源调整时间戳位置
+        time_y = total_content_height  # 时间戳放在内容下方
         if self.is_current_user:
-            time_x = bx + h_padding  # 自己发送：靠左
+            time_x = bx + h_padding
         else:
-            time_x = bx + bubble_size.width() - time_size.width() - h_padding  # 他人发送：靠右
-        # 检查时间戳是否超出气泡高度
-        required_height = time_y + time_size.height() + v_padding
-        if required_height > bubble_size.height():
-            bubble_size.setHeight(required_height)
-            self._bubble_rect.setHeight(required_height)
+            time_x = bx + bubble_size.width() - time_size.width() - h_padding
+
         if self.progress_bar and self.progress_bar.isVisible():
             self.label_time.hide()
             self.progress_bar.move(int(content_x), int(time_y))
             self.progress_bar.setFixedWidth(int(content_width))
             self.progress_bar.show()
+            time_y += self.progress_bar.height() + v_padding  # 进度条下方留出空间
         else:
             self.label_time.show()
             self.label_time.move(int(time_x), int(time_y))
@@ -743,7 +775,13 @@ class ChatBubbleWidget(QWidget):
             if self.progress_bar:
                 self.progress_bar.hide()
 
-        # 更新缩略图和播放按钮（保持不变）
+        # 确保气泡高度包含时间戳
+        required_height = time_y + time_size.height() + v_padding
+        if required_height > bubble_size.height():
+            bubble_size.setHeight(required_height)
+            self._bubble_rect.setHeight(required_height)
+
+        # 更新缩略图和播放按钮
         if self.message_type == 'image' and hasattr(self, 'original_image') and self.original_image:
             scaled_image = self.original_image.scaled(self.thumbnail_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             rounded = self._roundedPixmap(QPixmap.fromImage(scaled_image), radius=8)
@@ -765,10 +803,7 @@ class ChatBubbleWidget(QWidget):
             self.play_button.hide()
 
         # 设置最终尺寸
-        new_height = bubble_size.height()
-        if self.progress_bar and self.progress_bar.isVisible():
-            new_height += self.progress_bar.height() + v_padding
-        new_size = QSize(bubble_size.width() + self.config.triangle_size, new_height)
+        new_size = QSize(bubble_size.width() + self.config.triangle_size, bubble_size.height())
         if self.size() != new_size:
             self.setFixedSize(new_size)
 

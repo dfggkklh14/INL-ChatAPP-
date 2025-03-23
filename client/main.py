@@ -16,13 +16,13 @@ from PyQt5.QtGui import QIcon, QRegularExpressionValidator, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QGridLayout, QLineEdit,
     QHBoxLayout, QLabel, QDialog, QMessageBox, QListWidget,
-    QListWidgetItem, QSystemTrayIcon, QMenu, QVBoxLayout, QScrollArea, QFrame
+    QListWidgetItem, QSystemTrayIcon, QMenu, QVBoxLayout, QScrollArea, QFrame, QAbstractItemView
 )
 from qasync import QEventLoop
 
 from chat_client import ChatClient
 from Interface_Controls import (FriendItemWidget, OnLine, theme_manager, StyleGenerator, generate_thumbnail,
-                                FloatingLabel, run_async)
+                                FloatingLabel, run_async, load_theme_mode)
 from BubbleWidget import ChatAreaWidget, ChatBubbleWidget, create_confirmation_dialog
 from FileConfirmDialog import FileConfirmDialog
 from MessageInput import MessageInput
@@ -90,6 +90,7 @@ class LoginWindow(QDialog):
         self.main_app = main_app
         self.chat_client = ChatClient()
         self._setup_ui()
+        theme_manager.register(self)
 
     def _setup_ui(self) -> None:
         self.setWindowTitle("ChatINL 登录")
@@ -109,6 +110,7 @@ class LoginWindow(QDialog):
         layout.addWidget(self.login_button, 2, 1)
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(2, 1)
+        self.update_theme(theme_manager.current_theme)
 
     def on_login(self) -> None:
         username, password = self.username_input.text().strip(), self.password_input.text().strip()
@@ -133,6 +135,12 @@ class LoginWindow(QDialog):
 
     def closeEvent(self, event):
         event.accept()
+
+    def update_theme(self, theme: dict) -> None:
+        self.setStyleSheet(f"background-color: {theme['MAIN_INTERFACE']};")
+        StyleGenerator.apply_style(self.username_input, "line_edit")
+        StyleGenerator.apply_style(self.password_input, "line_edit")
+        StyleGenerator.apply_style(self.login_button, "button", extra="border-radius: 4px;")
 
 # 添加好友对话框
 class AddFriendDialog(QDialog):
@@ -191,7 +199,7 @@ class ChatWindow(QWidget):
         self.loading_history = False
         self.has_more_history = True
         self.chat_components: Dict[str, Optional[QWidget]] = {k: None for k in
-                                                              ['area_widget', 'scroll', 'input', 'send_button',
+                                                              ['area_widget', 'input', 'send_button',
                                                                'online', 'chat', 'right_panel']}
         self.scroll_to_bottom_btn: Optional[QPushButton] = None
         self.add_friend_dialog: Optional[AddFriendDialog] = None
@@ -232,6 +240,7 @@ class ChatWindow(QWidget):
         main_layout.addWidget(self.left_panel, 0, 1)
         main_layout.addWidget(self.content_widget, 0, 2)
         main_layout.setColumnStretch(2, 1)
+        self.update_theme(theme_manager.current_theme)
 
     def _create_panel(self, button_setup: Callable[[QVBoxLayout], None], width: int) -> QWidget:
         panel = QWidget(self)
@@ -540,17 +549,21 @@ class ChatWindow(QWidget):
         self.update_theme(theme_manager.current_theme)
 
     def update_theme(self, theme: dict) -> None:
-        # 更新已有主题逻辑
         self.setStyleSheet(f"background-color: {theme['MAIN_INTERFACE']};")
         if hasattr(self, "friend_list"):
             StyleGenerator.apply_style(self.friend_list, "list_widget")
+            self.friend_list.setStyleSheet(
+                f"QListWidget {{ background-color: {theme['list_background']}; color: {theme['font_color']}; border: none; outline: none; }}"
+                f"QListWidget::item {{ border-bottom: 1px solid {theme['line_edit_border']}; background-color: transparent; }}"
+                f"QListWidget::item:selected {{ background-color: {theme['list_item_selected']}; color: {theme['button_text_color']}; }}"
+                f"QListWidget::item:hover {{ background-color: {theme['list_item_hover']}; }}"
+            )
         self.friend_list.verticalScrollBar().setStyleSheet(
-            StyleGenerator._BASE_STYLES["scrollbar"].format(**theme_manager.current_theme))
-        if scroll := self.chat_components.get('scroll'):
-            scroll.viewport().setStyleSheet(f"background-color: {theme['chat_bg']};")
-            StyleGenerator.apply_style(scroll, "scrollbar")
+            StyleGenerator._BASE_STYLES["scrollbar"].format(**theme))
         if chat := self.chat_components.get('chat'):
-            chat.setStyleSheet(f"background-color: {theme['chat_bg']};")
+            chat.setStyleSheet(f"background-color: {theme['chat_bg']}; border: none;")
+            chat.verticalScrollBar().setStyleSheet(
+                StyleGenerator._BASE_STYLES["scrollbar"].format(**theme))
         if input_widget := self.chat_components.get('input'):
             StyleGenerator.apply_style(input_widget.text_edit, "text_edit")
         if send_btn := self.chat_components.get('send_button'):
@@ -561,14 +574,15 @@ class ChatWindow(QWidget):
             self.add_friend_dialog.update_theme(theme)
         if self.scroll_to_bottom_btn:
             StyleGenerator.apply_style(self.scroll_to_bottom_btn, "button", extra="border-radius: 15px;")
-        if self.image_viewer and not sip.isdeleted(self.image_viewer):
+        if hasattr(self, 'image_viewer') and self.image_viewer is not None and not sip.isdeleted(self.image_viewer):
             self.image_viewer.setStyleSheet(f"background-color: rgba(0, 0, 0, 220);")
             StyleGenerator.apply_style(self.image_viewer.prev_button, "button", extra="border-radius: 25px;")
             StyleGenerator.apply_style(self.image_viewer.next_button, "button", extra="border-radius: 25px;")
             StyleGenerator.apply_style(self.image_viewer.close_button, "button", extra="border-radius: 15px;")
-        if self.user_details_widget and not sip.isdeleted(self.user_details_widget):
+        # 修改此处：确保 user_details_widget 已实例化
+        if hasattr(self, 'user_details_widget') and self.user_details_widget is not None and not sip.isdeleted(
+                self.user_details_widget):
             self.user_details_widget.update_theme(theme)
-        # 更新多选模式按钮的主题
         if self.selection_buttons_widget and not sip.isdeleted(self.selection_buttons_widget):
             for btn in self.selection_buttons_widget.findChildren(QPushButton):
                 StyleGenerator.apply_style(btn, "button", extra="border-radius: 4px;")
@@ -576,20 +590,18 @@ class ChatWindow(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
 
-        scroll = self.chat_components.get('scroll')
         chat_area = self.chat_components.get('chat')
-
-        if not scroll or not chat_area:
+        if not chat_area:
             return
 
-        sb = scroll.verticalScrollBar()
+        sb = chat_area.verticalScrollBar()
         old_value = sb.value()
         anchor_bubble = None
         anchor_offset = None
         viewport_top = old_value
-        for container in chat_area.bubble_containers:
-            for i in range(container.layout().count()):
-                widget = container.layout().itemAt(i).widget()
+        for item in chat_area.bubble_items:  # 使用 bubble_items 而非 bubble_containers
+            container = chat_area.itemWidget(item)
+            for widget in container.children():
                 if isinstance(widget, ChatBubbleWidget):
                     bubble_top = widget.mapTo(chat_area, QPoint(0, 0)).y()
                     if bubble_top >= viewport_top:
@@ -615,15 +627,14 @@ class ChatWindow(QWidget):
                 child._adjust_size_and_position()
                 child.update()
 
-        # 如果 right_panel 已展开，确保其宽度保持 330px
         if (self.chat_components.get('right_panel') and
                 self.user_details_right and not sip.isdeleted(self.user_details_right)):
             self.chat_components['right_panel'].setFixedWidth(330)
 
         def restore_scroll_position():
-            if not scroll or not chat_area or sip.isdeleted(scroll) or sip.isdeleted(chat_area):
+            if not chat_area or sip.isdeleted(chat_area):
                 return
-            sb = scroll.verticalScrollBar()
+            sb = chat_area.verticalScrollBar()
             new_max = sb.maximum()
             if anchor_bubble and not sip.isdeleted(anchor_bubble):
                 new_bubble_top = anchor_bubble.mapTo(chat_area, QPoint(0, 0)).y()
@@ -632,40 +643,7 @@ class ChatWindow(QWidget):
                 new_value = 0 if old_value == 0 else min(old_value, new_max)
             new_value = min(new_value, new_max)
             sb.setValue(new_value)
-            scroll.viewport().update()
-
-        QTimer.singleShot(0, restore_scroll_position)
-
-        def restore_scroll_position():
-            if not scroll or not chat_area or sip.isdeleted(scroll) or sip.isdeleted(chat_area):
-                return
-            sb = scroll.verticalScrollBar()
-            new_max = sb.maximum()
-            if anchor_bubble and not sip.isdeleted(anchor_bubble):
-                new_bubble_top = anchor_bubble.mapTo(chat_area, QPoint(0, 0)).y()
-                new_value = max(0, new_bubble_top - anchor_offset)
-            else:
-                new_value = 0 if old_value == 0 else min(old_value, new_max)
-            new_value = min(new_value, new_max)
-            sb.setValue(new_value)
-            scroll.viewport().update()
-
-        QTimer.singleShot(0, restore_scroll_position)
-
-        # 延迟恢复滚动位置，确保布局更新完成
-        def restore_scroll_position():
-            if not scroll or not chat_area or sip.isdeleted(scroll) or sip.isdeleted(chat_area):
-                return
-            sb = scroll.verticalScrollBar()
-            new_max = sb.maximum()
-            if anchor_bubble and not sip.isdeleted(anchor_bubble):
-                new_bubble_top = anchor_bubble.mapTo(chat_area, QPoint(0, 0)).y()
-                new_value = max(0, new_bubble_top - anchor_offset)
-            else:
-                new_value = 0 if old_value == 0 else min(old_value, new_max)
-            new_value = min(new_value, new_max)
-            sb.setValue(new_value)
-            scroll.viewport().update()
+            chat_area.viewport().update()
 
         QTimer.singleShot(0, restore_scroll_position)
 
@@ -673,8 +651,8 @@ class ChatWindow(QWidget):
         # 清理 self.user_details_right
         if self.user_details_right and not sip.isdeleted(self.user_details_right):
             theme_manager.unregister(self.user_details_right)
-            self.user_details_right.hide()  # 先隐藏，避免事件处理
-            self.right_layout.removeWidget(self.user_details_right)  # 从布局中移除
+            self.user_details_right.hide()
+            self.right_layout.removeWidget(self.user_details_right)
             self.user_details_right.deleteLater()
             self.user_details_right = None
             if not self.isMaximized() and self.chat_components['right_panel'].width() > 0:
@@ -690,8 +668,7 @@ class ChatWindow(QWidget):
         for comp in self.chat_components.values():
             if comp and not sip.isdeleted(comp):
                 comp.deleteLater()
-        self.chat_components = {k: None for k in
-                                ['area_widget', 'scroll', 'input', 'send_button', 'online', 'chat', 'right_panel']}
+        self.chat_components = {k: None for k in ['area_widget', 'input', 'send_button', 'online', 'chat', 'right_panel']}
 
         # 清理滚动按钮
         if self.scroll_to_bottom_btn and not sip.isdeleted(self.scroll_to_bottom_btn):
@@ -701,8 +678,8 @@ class ChatWindow(QWidget):
         # 清理 self.user_details_widget
         if self.user_details_widget and not sip.isdeleted(self.user_details_widget):
             theme_manager.unregister(self.user_details_widget)
-            self.user_details_widget.hide()  # 先隐藏
-            self.content_layout.removeWidget(self.user_details_widget)  # 从布局中移除
+            self.user_details_widget.hide()
+            self.content_layout.removeWidget(self.user_details_widget)
             self.user_details_widget.deleteLater()
             self.user_details_widget = None
 
@@ -729,16 +706,9 @@ class ChatWindow(QWidget):
         self.chat_components['online'].friend_clicked.connect(self._on_friend_clicked)
 
         self.chat_components['chat'] = ChatAreaWidget(self)
-        self.chat_components['chat'].setStyleSheet(f"background-color: #e9e9e9;")
-
-        self.chat_components['scroll'] = QScrollArea(self)
-        self.chat_components['scroll'].setWidgetResizable(True)
-        self.chat_components['scroll'].setFrameShape(QFrame.NoFrame)
-        self.chat_components['scroll'].setWidget(self.chat_components['chat'])
-        self.chat_components['scroll'].viewport().setStyleSheet("background-color: #e9e9e9; border: none;")
-
-        StyleGenerator.apply_style(self.chat_components['scroll'], "scrollbar")
-        sb = self.chat_components['scroll'].verticalScrollBar()
+        self.chat_components['chat'].setStyleSheet(f"background-color: {theme_manager.current_theme['chat_bg']}; border: none;")
+        self.chat_components['chat'].verticalScrollBar().setStyleSheet(StyleGenerator._BASE_STYLES["scrollbar"].format(**theme_manager.current_theme))
+        sb = self.chat_components['chat'].verticalScrollBar()
         sb.valueChanged.connect(self.on_scroll_changed)
         self._create_scroll_button(theme_manager.current_theme)
 
@@ -746,14 +716,14 @@ class ChatWindow(QWidget):
         self.chat_components['input'].setFixedHeight(70)
 
         area_layout.addWidget(self.chat_components['online'], 0, 0, 1, 2)
-        area_layout.addWidget(self.chat_components['scroll'], 1, 0, 1, 1)
+        area_layout.addWidget(self.chat_components['chat'], 1, 0, 1, 1)
         area_layout.addWidget(self.chat_components['input'], 2, 0, 1, 1)
         area_layout.addWidget(self.chat_components['right_panel'], 1, 1, 2, 1)
 
-        area_layout.setColumnStretch(0, 1)  # 第 0 列（scroll）可伸缩
-        area_layout.setColumnStretch(1, 0)  # 第 1 列（right_panel）不可伸缩
-        area_layout.setRowStretch(1, 1)  # 第 1 行（scroll 和 right_panel）可伸缩
-        area_layout.setRowStretch(2, 0)  # 第 2 行（input）固定高度
+        area_layout.setColumnStretch(0, 1)
+        area_layout.setColumnStretch(1, 0)
+        area_layout.setRowStretch(1, 1)
+        area_layout.setRowStretch(2, 0)
 
         self.content_layout.addWidget(self.chat_components['area_widget'], 0, 0, 1, 2)
 
@@ -765,15 +735,15 @@ class ChatWindow(QWidget):
         self.update_theme(theme_manager.current_theme)
 
     def _create_scroll_button(self, theme: dict) -> None:
-        if not self.scroll_to_bottom_btn and self.chat_components.get('scroll'):
-            self.scroll_to_bottom_btn = QPushButton(self.chat_components['scroll'].viewport())
+        if not self.scroll_to_bottom_btn and self.chat_components.get('chat'):
+            self.scroll_to_bottom_btn = QPushButton(self.chat_components['chat'].viewport())
             self.scroll_to_bottom_btn.setFixedSize(30, 30)
-            # 直接连接点击事件到 adjust_scroll 并隐藏按钮
             self.scroll_to_bottom_btn.clicked.connect(lambda: [self.adjust_scroll(), self.scroll_to_bottom_btn.hide()])
             StyleGenerator.apply_style(self.scroll_to_bottom_btn, "button", extra="border-radius: 15px;")
             self.scroll_to_bottom_btn.setIcon(QIcon(resource_path("icon/arrow_down.ico")))
             self.scroll_to_bottom_btn.setIconSize(QSize(15, 15))
             self.scroll_to_bottom_btn.hide()
+            self.scroll_to_bottom_btn.raise_()  # 提升到顶层
 
     def show_image_viewer(self, file_id: str, original_file_name: str) -> None:
         if not self.image_viewer or not self.chat_components.get('area_widget'):
@@ -807,13 +777,17 @@ class ChatWindow(QWidget):
         self.scroll_to_bottom_btn.hide()
 
     def on_scroll_changed(self, value: int) -> None:
-        sb = self.chat_components['scroll'].verticalScrollBar()
-        if value == 0 and self.has_more_history and not self.loading_history:
+        chat = self.chat_components.get('chat')
+        if not chat or self.loading_history or self.auto_scrolling:
+            return
+
+        sb = chat.verticalScrollBar()
+        if value == 0 and self.has_more_history:
             run_async(self.load_chat_history(reset=False))
-        asyncio.create_task(self._check_scroll_position())
-        if (self.client.current_friend and
-                self.client.unread_messages.get(self.client.current_friend, 0) > 0 and
-                not self.auto_scrolling and sb.maximum() - value <= 5):
+        self._check_scroll_position()
+        if self.scroll_to_bottom_btn and self.scroll_to_bottom_btn.isVisible():
+            self.scroll_to_bottom_btn.raise_()
+        if self.client.current_friend and self.client.unread_messages.get(self.client.current_friend, 0) > 0 and not self.auto_scrolling and sb.maximum() - sb.value() <= 5:
             old_unread = self.client.unread_messages.get(self.client.current_friend, 0)
             self.client.clear_unread_messages(self.client.current_friend)
             if old_unread > 0:  # 仅当未读消息数变化时更新
@@ -821,13 +795,12 @@ class ChatWindow(QWidget):
                 run_async(self.update_friend_list(affected_users=[self.client.current_friend]))  # 精准更新
 
     def _scroll_to_bottom(self) -> None:
-        """确保界面更新完成后，将滚动条滚动到最底部"""
         QApplication.processEvents()
-        scroll = self.chat_components.get('scroll')
-        if scroll:
-            sb = scroll.verticalScrollBar()
+        chat = self.chat_components.get('chat')
+        if chat:
+            sb = chat.verticalScrollBar()
             sb.setValue(sb.maximum())
-            asyncio.create_task(self._check_scroll_position())
+            self._check_scroll_position()
         self.auto_scrolling = False
 
     def adjust_scroll(self) -> None:
@@ -841,15 +814,12 @@ class ChatWindow(QWidget):
             old_unread = self.client.unread_messages.get(self.client.current_friend, 0)
             self.client.clear_unread_messages(self.client.current_friend)
             if old_unread > 0:
-                run_async(self.update_friend_list(affected_users=[self.client.current_friend]))
+                asyncio.create_task(self.update_friend_list(affected_users=[self.client.current_friend]))
 
-    async def _check_scroll_position(self) -> None:
-        sb = self.chat_components['scroll'].verticalScrollBar()
-        should_show = (self.client.current_friend and
-                       self.client.unread_messages.get(self.client.current_friend, 0) > 0 and
-                       sb.maximum() - sb.value() > 50)
+    def _check_scroll_position(self) -> None:
+        sb = self.chat_components['chat'].verticalScrollBar()
+        should_show = (self.client.current_friend and self.client.unread_messages.get(self.client.current_friend, 0) > 0 and sb.maximum() - sb.value() > 50)
         self._create_scroll_button(theme_manager.current_theme)
-        # 使用同步调用代替 QTimer，减少事件循环冲突
         if should_show:
             self._position_scroll_button()
             self.scroll_to_bottom_btn.show()
@@ -857,85 +827,75 @@ class ChatWindow(QWidget):
             self.scroll_to_bottom_btn.hide()
 
     def _position_scroll_button(self) -> None:
-        if self.scroll_to_bottom_btn and (scroll := self.chat_components.get('scroll')):
-            viewport = scroll.viewport()
+        if self.scroll_to_bottom_btn and (chat := self.chat_components.get('chat')):
+            viewport = chat.viewport()
             x = max(10, viewport.width() - self.scroll_to_bottom_btn.width() - 10)
             y = max(10, viewport.height() - self.scroll_to_bottom_btn.height() - 10)
             self.scroll_to_bottom_btn.move(x, y)
+            self.scroll_to_bottom_btn.raise_()  # 确保每次移动后仍在顶层
 
     def should_scroll_to_bottom(self) -> bool:
-        sb = self.chat_components['scroll'].verticalScrollBar()
-        return (sb.maximum() - sb.value()) < self.chat_components['scroll'].viewport().height()
+        sb = self.chat_components['chat'].verticalScrollBar()
+        return sb.value() > sb.maximum() - self.chat_components['chat'].viewport().height()  # 靠近底部
+
+    def _scroll_to_bubble(self, bubble: ChatBubbleWidget, item: QListWidgetItem) -> None:
+        chat_area = self.chat_components['chat']
+        self.auto_scrolling = True
+        chat_area.scrollToItem(item, QAbstractItemView.PositionAtCenter)  # 滚动到目标项，居中显示
+        QApplication.processEvents()
+        self.auto_scrolling = False
+        self._check_scroll_position()
+        bubble.highlight_container_with_animation()
 
     async def scroll_to_message(self, target_rowid: int) -> None:
         if not self.chat_components.get('chat') or not self.client.current_friend:
             return
 
         chat_area = self.chat_components['chat']
-        scroll = self.chat_components['scroll']
-        sb = scroll.verticalScrollBar()
+        sb = chat_area.verticalScrollBar()
 
-        # 查找目标气泡
+        # 查找目标气泡和对应的 item
         target_bubble = None
-        for container in chat_area.bubble_containers:
-            for i in range(container.layout().count()):
-                widget = container.layout().itemAt(i).widget()
-                if isinstance(widget, ChatBubbleWidget) and widget.rowid == target_rowid:
-                    target_bubble = widget
+        target_item = None
+        for item in chat_area.bubble_items:
+            container = chat_area.itemWidget(item)
+            if container and not sip.isdeleted(container):
+                for widget in container.children():
+                    if isinstance(widget, ChatBubbleWidget) and widget.rowid == target_rowid:
+                        target_bubble = widget
+                        target_item = item
+                        break
+                if target_bubble:
                     break
-            if target_bubble:
-                break
 
-        # 如果找到目标气泡，直接滚动
-        if target_bubble:
-            self._scroll_to_bubble(target_bubble)
-        else:
-            # 如果未找到，尝试加载更多历史记录
-            while self.has_more_history:
-                old_max = sb.maximum()
-                await self.load_chat_history(reset=False)
-                QApplication.processEvents()
+        if target_bubble and target_item:
+            self._scroll_to_bubble(target_bubble, target_item)
+            return
 
-                # 检查新加载的气泡中是否有目标
-                for container in chat_area.bubble_containers:
-                    for i in range(container.layout().count()):
-                        widget = container.layout().itemAt(i).widget()
+        # 如果未找到，加载更多历史记录
+        while self.has_more_history:
+            old_max = sb.maximum()
+            await self.load_chat_history(reset=False)
+            QApplication.processEvents()
+            # sb.setValue(0)
+
+            for item in chat_area.bubble_items:
+                container = chat_area.itemWidget(item)
+                if container and not sip.isdeleted(container):
+                    for widget in container.children():
                         if isinstance(widget, ChatBubbleWidget) and widget.rowid == target_rowid:
                             target_bubble = widget
+                            target_item = item
                             break
                     if target_bubble:
                         break
 
-                if target_bubble:
-                    self._scroll_to_bubble(target_bubble)
-                    break
-                elif sb.maximum() == old_max:  # 没有更多历史记录
-                    QMessageBox.information(self, "提示", f"未找到消息 #{target_rowid}，可能是太早的消息或已被删除")
-                    break
-
-    def _scroll_to_bubble(self, bubble: ChatBubbleWidget) -> None:
-        """将滚动条调整到指定气泡位置并高亮其容器"""
-        scroll = self.chat_components['scroll']
-        chat_area = self.chat_components['chat']
-        sb = scroll.verticalScrollBar()
-
-        # 计算气泡在聊天区域中的相对位置
-        bubble_pos = bubble.mapTo(chat_area, QPoint(0, 0)).y()
-        bubble_height = bubble.height()
-
-        # 调整滚动条，使气泡位于可视区域的中间
-        viewport_height = scroll.viewport().height()
-        target_scroll_value = bubble_pos - (viewport_height - bubble_height) // 2
-        target_scroll_value = max(0, min(target_scroll_value, sb.maximum()))
-
-        self.auto_scrolling = True
-        sb.setValue(target_scroll_value)
-        QApplication.processEvents()
-        self.auto_scrolling = False
-        asyncio.create_task(self._check_scroll_position())
-
-        # 触发容器的高亮动画
-        bubble.highlight_container_with_animation()
+            if target_bubble and target_item:
+                self._scroll_to_bubble(target_bubble, target_item)
+                break
+            elif sb.maximum() == old_max:
+                QMessageBox.information(self, "提示", f"未找到消息 #{target_rowid}，可能是太早的消息或已被删除")
+                break
 
     async def add_message(self, message: str, is_current: bool, tstr: str, message_type: str = 'text',
                           file_id: str = None, original_file_name: str = None, thumbnail_path: str = None,
@@ -944,8 +904,8 @@ class ChatWindow(QWidget):
             message, tstr, "right" if is_current else "left", is_current,
             message_type, file_id, original_file_name, thumbnail_path, file_size, duration
         )
-        self.chat_components['chat'].addBubble(bubble)
-        if bubble.rowid:  # 仅存储有 rowid 的气泡
+        self.chat_components['chat'].addBubble(bubble)  # 追加到末尾
+        if bubble.rowid:
             self.active_bubbles[bubble.rowid] = bubble
         if message_type == 'image' and file_id:
             self.image_list.append((file_id, original_file_name or f"image_{file_id}"))
@@ -1105,9 +1065,9 @@ class ChatWindow(QWidget):
                 self.setup_chat_area()
             bubble_type = file_type if msg_type == "new_media" else "text"
             bubble = ChatBubbleWidget(msg, format_time(wt), "left", False, bubble_type,
-                file_id, original_file_name, thumbnail_path, file_size_str, duration,
-                rowid=rowid, reply_to=reply_to, reply_preview=reply_preview)
-            self.chat_components['chat'].addBubble(bubble)
+                                      file_id, original_file_name, thumbnail_path, file_size_str, duration,
+                                      rowid=rowid, reply_to=reply_to, reply_preview=reply_preview)
+            self.chat_components['chat'].addBubble(bubble)  # 追加到末尾
             if bubble.rowid:
                 self.active_bubbles[bubble.rowid] = bubble
             if bubble_type == "image" and file_id:
@@ -1117,8 +1077,9 @@ class ChatWindow(QWidget):
                 self.client.clear_unread_messages(sender)
                 await self.update_friend_list(affected_users=[sender])
             else:
-                await self._check_scroll_position()
-        notification_msg = (msg if msg_type == "new_message" else f"收到新的{ {'image': '图片', 'video': '视频', 'file': '文件'}.get(file_type, '未知')}: {original_file_name or '未知文件'}")
+                self._check_scroll_position()
+        notification_msg = (
+            msg if msg_type == "new_message" else f"收到新的{ {'image': '图片', 'video': '视频', 'file': '文件'}.get(file_type, '未知')}: {original_file_name or '未知文件'}")
         if msg and msg_type == "new_media":
             notification_msg += f"\n附加消息: {msg}"
         self.show_notification(f"用户 {sender}:", notification_msg)
@@ -1141,6 +1102,7 @@ class ChatWindow(QWidget):
 
     async def update_conversations(self, friends: List[dict], affected_users: Optional[List[str]] = None,
                                    deleted_rowids: List[int] = None, show_floating_label: bool = False) -> None:
+        logging.debug(f"Updating conversations with deleted_rowids: {deleted_rowids}")
         chat_area = self.chat_components.get('chat')
         if affected_users:
             await self.update_friend_list(affected_users=affected_users)
@@ -1301,14 +1263,17 @@ class ChatWindow(QWidget):
             return
 
         self.loading_history = True
-        sb = self.chat_components.get('scroll', {}).verticalScrollBar()
-        old_val = sb.value() if sb else 0
+        chat = self.chat_components.get('chat')
+        sb = chat.verticalScrollBar() if chat else None
+        old_val = sb.value() if sb else 0  # 记录加载前的滚动条当前位置
+        old_max = sb.maximum() if sb else 0  # 记录加载前的滚动条最大值
 
-        res = await self.client.get_chat_history_paginated(
-            self.client.current_friend, self.current_page, self.page_size
-        )
+        # 获取聊天历史记录
+        res = await self.client.get_chat_history_paginated(self.client.current_friend, self.current_page, self.page_size)
         if res and res.get("type") == "chat_history" and (messages := res.get("data", [])):
-            bubbles = []
+            # 创建新气泡
+            new_bubbles = []
+            messages = list(reversed(messages))  # 反转消息顺序，确保时间从旧到新
             for msg in messages:
                 file_size = msg.get("file_size", 0)
                 if isinstance(file_size, (int, float)):
@@ -1316,7 +1281,7 @@ class ChatWindow(QWidget):
                 else:
                     file_size_str = file_size
 
-                # 处理缩略图下载
+                # 处理缩略图下载（保持不变）
                 file_id = msg.get("file_id")
                 attachment_type = msg.get("attachment_type")
                 if file_id and attachment_type in ["image", "video"]:
@@ -1326,9 +1291,8 @@ class ChatWindow(QWidget):
                         result = await self.client.download_media(file_id, save_path, "thumbnail")
                         if result.get("status") != "success":
                             logging.error(f"缩略图下载失败: {result.get('message')}")
-                    msg["thumbnail_local_path"] = save_path  # 添加本地缩略图路径
+                    msg["thumbnail_local_path"] = save_path
 
-                # 创建气泡，传递 thumbnail_local_path
                 bubble = ChatBubbleWidget(
                     msg.get("message", ""), format_time(msg.get("write_time", "")),
                     "right" if msg.get("is_current_user") else "left", msg.get("is_current_user", False),
@@ -1337,32 +1301,49 @@ class ChatWindow(QWidget):
                     rowid=msg.get("rowid"),
                     reply_to=msg.get("reply_to"),
                     reply_preview=msg.get("reply_preview"),
-                    thumbnail_local_path=msg.get("thumbnail_local_path")  # 传递本地路径
+                    thumbnail_local_path=msg.get("thumbnail_local_path")
                 )
-                bubbles.append(bubble)
+                new_bubbles.append(bubble)
                 if bubble.rowid:
                     self.active_bubbles[bubble.rowid] = bubble
                 if attachment_type == "image" and file_id:
-                    self.image_list.append(
-                        (file_id, msg.get("original_file_name") or f"image_{file_id}"))
+                    self.image_list.append((file_id, msg.get("original_file_name") or f"image_{file_id}"))
 
-            self.chat_components['chat'].addBubbles(bubbles)
+            # 处理气泡加载
+            if not reset:
+                # 提取现有气泡
+                existing_bubbles = []
+                for item in chat.bubble_items[:]:
+                    if not sip.isdeleted(item):
+                        container = chat.itemWidget(item)
+                        if container and not sip.isdeleted(container):
+                            bubble = next((w for w in container.children() if isinstance(w, ChatBubbleWidget)), None)
+                            if bubble and not sip.isdeleted(bubble):
+                                existing_bubbles.append(bubble)
+
+                # 合并新旧气泡：新气泡在顶部，旧气泡在底部
+                all_bubbles = new_bubbles + existing_bubbles
+
+                # 清空并批量添加
+                chat.bubble_items.clear()
+                chat.clear()
+                chat.addBubbles(all_bubbles)  # 使用 addBubbles 批量添加
+            else:
+                # 重置时直接添加新气泡到末尾
+                chat.addBubbles(new_bubbles)
 
             def update_and_scroll():
-                for bubble in bubbles:
+                for bubble in new_bubbles:
                     bubble.updateBubbleSize()
                 self.friend_list.update()
                 QApplication.processEvents()
                 if reset and sb:
-                    sb.setValue(sb.maximum())
-                    if sb.value() != sb.maximum():
-                        sb.setValue(sb.maximum())
+                    sb.setValue(sb.maximum())  # 初始加载滚动到底部
                 elif sb:
-                    self.auto_scrolling = True
-                    inserted = sum(b.sizeHint().height() for b in bubbles)
-                    sb.setValue(old_val + inserted)
-                    self.auto_scrolling = False
-                asyncio.create_task(self._check_scroll_position())
+                    new_max = sb.maximum()  # 记录加载后的滚动条最大值
+                    new_value = old_val + (new_max - old_max)  # 使用公式计算新位置
+                    sb.setValue(max(0, min(new_value, new_max)))  # 确保值在有效范围内
+                self._check_scroll_position()
 
             QTimer.singleShot(0, update_and_scroll)
             self.has_more_history = len(messages) >= self.page_size
@@ -1378,7 +1359,7 @@ class ChatWindow(QWidget):
         friend = self.friend_list.itemWidget(item).username
         if friend == self.client.current_friend:
             online_status = any(f["username"] == friend and f.get("online", False) for f in self.client.friends)
-            if (online_widget := self.chat_components.get('online')):
+            if online_widget := self.chat_components.get('online'):
                 online_widget.update_status(friend, online_status)
             return
         if self.user_details_widget and not sip.isdeleted(self.user_details_widget):
@@ -1388,7 +1369,8 @@ class ChatWindow(QWidget):
         await self.load_chat_history(reset=True)
         online_status = any(f["username"] == friend and f.get("online", False) for f in self.client.friends)
         self.chat_components['online'].update_status(friend, online_status)
-        sb = self.chat_components['scroll'].verticalScrollBar()
+        sb = self.chat_components['chat'].verticalScrollBar()
+        self.adjust_scroll()
         if sb.maximum() - sb.value() <= 5:
             old_unread = self.client.unread_messages.get(friend, 0)
             self.client.clear_unread_messages(friend)
@@ -1558,6 +1540,8 @@ class ChatApp:
         asyncio.set_event_loop(self.loop)
         self.login_window = LoginWindow(self)
         self.chat_window: Optional[ChatWindow] = None
+        theme_manager.set_mode(load_theme_mode())
+        self.login_window.update_theme(theme_manager.current_theme)
 
     def _setup_tray(self) -> None:
         self.tray_icon.setIcon(QIcon(resource_path("icon/icon.ico")))

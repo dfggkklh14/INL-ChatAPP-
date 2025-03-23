@@ -435,8 +435,7 @@ class ChatClient(QObject):
         write_time = resp.get("write_time", "")
         show_floating_label = resp.get("show_floating_label", False)  # 获取新字段，默认 False
 
-        new_conversation = {"sender": user1, "content": conversations,
-                            "last_update_time": write_time} if conversations else None
+        new_conversation = {"sender": user1, "content": conversations, "last_update_time": write_time} if conversations else None
         for friend in self.friends:
             if friend.get("username") in (user1, user2):
                 friend["conversations"] = new_conversation

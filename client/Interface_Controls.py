@@ -1,5 +1,7 @@
 # Interface_Controls.py
 import asyncio
+import json
+import logging
 import os
 import sys
 from typing import Optional, Any, List
@@ -14,6 +16,9 @@ from PyQt5.QtWidgets import QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout
     QPushButton
 
 
+CACHE_ROOT = os.path.join(os.path.dirname(__file__), "Chat_DATA")
+THEME_CONFIG_PATH = os.path.join(CACHE_ROOT, "config/theme_config.json")
+
 # ---------- 实用函数 ----------
 
 def run_async(coro) -> None:
@@ -25,6 +30,28 @@ def resource_path(relative_path: str) -> str:
     """
     base_path = getattr(sys, '_MEIPASS', os.path.abspath('.'))
     return os.path.join(base_path, relative_path)
+
+def save_theme_mode(mode: str) -> None:
+    """保存主题模式到 Chat_DATA 文件夹下的 theme_config.json"""
+    os.makedirs(CACHE_ROOT, exist_ok=True)  # 确保 Chat_DATA 文件夹存在
+    try:
+        with open(THEME_CONFIG_PATH, 'w') as f:
+            json.dump({"theme_mode": mode}, f)
+        logging.debug(f"主题模式已保存到 {THEME_CONFIG_PATH}")
+    except Exception as e:
+        logging.error(f"保存主题模式失败: {e}")
+
+def load_theme_mode() -> str:
+    """从 Chat_DATA 文件夹读取保存的主题模式"""
+    default_mode = "light"
+    try:
+        if os.path.exists(THEME_CONFIG_PATH):
+            with open(THEME_CONFIG_PATH, 'r') as f:
+                config = json.load(f)
+                return config.get("theme_mode", default_mode)
+    except Exception as e:
+        logging.error(f"读取主题模式失败: {e}")
+    return default_mode
 
 # ---------- 主题设置 ----------
 
@@ -156,14 +183,15 @@ class ThemeManager:
     """
     def __init__(self) -> None:
         self.themes = {"light": LIGHT_THEME, "dark": DARK_THEME}
-        self.current_mode = "light"
+        self.current_mode = load_theme_mode()  # 加载保存的模式
         self.current_theme = self.themes[self.current_mode]
         self.observers: List[Any] = []
 
     def set_mode(self, mode: str) -> None:
         if mode in self.themes:
+            self.current_mode = mode
             self.current_theme = self.themes[mode]
-            self.current_theme = self.themes[mode]
+            save_theme_mode(mode)  # 保存新选择的模式
             self.notify_observers()
 
     def notify_observers(self) -> None:
@@ -446,6 +474,11 @@ class FriendItemWidget(QWidget):
         self.name_label.setText(self.name)
         self.message_label.setText(self.last_message)
 
+        # 应用主题颜色到 name_label 和 message_label
+        theme = theme_manager.current_theme
+        self.name_label.setStyleSheet(f"background-color: transparent; color: {theme['font_color']};")
+        self.message_label.setStyleSheet(f"background-color: transparent; color: {theme['font_color']};")
+
         if self.unread > 0:
             self.badge_label.setPixmap(create_badge(self.unread))
             self.badge_label.setFixedSize(15, 15)
@@ -456,7 +489,7 @@ class FriendItemWidget(QWidget):
             self.badge_label.setFont(QFont("微软雅黑", 8))
             self.badge_label.setFixedSize(40, 15)
             self.badge_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            StyleGenerator.apply_style(self.badge_label, "label")
+            self.badge_label.setStyleSheet(f"background-color: transparent; color: {theme['font_color']};")
 
         self.badge_label.update()
         self.update()
@@ -532,13 +565,11 @@ class FriendItemWidget(QWidget):
 
     def update_theme(self, theme: dict) -> None:
         if not sip.isdeleted(self.name_label):
-            StyleGenerator.apply_style(self.name_label, "label")
+            self.name_label.setStyleSheet(f"background-color: transparent; color: {theme['font_color']};")
         if not sip.isdeleted(self.message_label):
-            StyleGenerator.apply_style(self.message_label, "label")
+            self.message_label.setStyleSheet(f"background-color: transparent; color: {theme['font_color']};")
         if not sip.isdeleted(self.badge_label):
-            StyleGenerator.apply_style(self.badge_label, "label")
-        if not sip.isdeleted(self.badge_label):
-            self.badge_label.setStyleSheet("background-color: transparent;")
+            self.badge_label.setStyleSheet(f"background-color: transparent; color: {theme['font_color']};")
         if not sip.isdeleted(self.avatar_label):
             self.avatar_label.setStyleSheet("background-color: transparent;")
         if not sip.isdeleted(self.avatar_container):
