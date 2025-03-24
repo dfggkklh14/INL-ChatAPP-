@@ -50,6 +50,48 @@ def create_confirmation_dialog(parent: QWidget, title: str, message: str) -> int
     # 执行并返回结果
     return msg_box.exec_()
 
+
+class BubbleTextEdit(QTextEdit):
+    """
+    专为聊天气泡设计的 QTextEdit 子类，统一设置常见属性和行为。
+    """
+    def __init__(self, parent=None, font=None, read_only=True, wrap_mode=QTextEdit.WidgetWidth):
+        """
+        初始化 BubbleTextEdit。
+
+        Args:
+            parent: 父控件，默认为 None
+            font: 字体对象，默认为 None（可由调用者指定）
+            read_only: 是否只读，默认为 True
+            wrap_mode: 换行模式，默认为 WidgetWidth（按控件宽度换行）
+        """
+        super().__init__(parent)
+        self.setFont(font if font else QFont("微软雅黑", 9))
+        self.setStyleSheet(
+            "background: transparent; "
+            "border: none; "
+            "padding: 0px;"
+        )
+        self.setReadOnly(read_only)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.document().setDocumentMargin(0)
+        self.setLineWrapMode(wrap_mode)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+
+    def setTextContent(self, text: str, alignment=Qt.AlignLeft | Qt.AlignTop):
+        """
+        设置文本内容并应用对齐方式。
+
+        Args:
+            text: 要显示的文本
+            alignment: 文本对齐方式，默认为左上对齐
+        """
+        self.setPlainText(text)
+        self.setAlignment(alignment)
+
+
 class ChatAreaWidget(QListWidget):
     """
     基于 QListWidget 的聊天区域控件，用于容纳聊天气泡。
@@ -207,7 +249,9 @@ class ChatAreaWidget(QListWidget):
         if not deleted_rowids:
             logging.debug("No rowids to delete, exiting")
             return
+
         items_to_remove = []
+        removed_file_ids = []  # 收集被删除的图片 file_id
         for item in self.bubble_items[:]:
             container = self.itemWidget(item)
             bubble = next((w for w in container.children() if isinstance(w, ChatBubbleWidget)),
@@ -215,12 +259,14 @@ class ChatAreaWidget(QListWidget):
             if bubble and bubble.rowid in deleted_rowids:
                 logging.debug(f"Found bubble to remove: rowid={bubble.rowid}")
                 items_to_remove.append(item)
+                # 如果是图片消息，记录 file_id
+                if bubble.message_type == "image" and bubble.file_id:
+                    removed_file_ids.append(bubble.file_id)
 
         for item in items_to_remove:
             row = self.row(item)
-            container = self.itemWidget(item)  # 再次获取 container
-            bubble = next((w for w in container.children() if isinstance(w, ChatBubbleWidget)),  None) if container else None
-            logging.debug(f"Removing item at row {row} with rowid {bubble.rowid if bubble else 'None'}")
+            container = self.itemWidget(item)
+            logging.debug(f"Removing item at row {row}")
             if row != -1:  # 确保 item 仍在列表中
                 self.takeItem(row)
                 self.bubble_items.remove(item)
@@ -229,14 +275,18 @@ class ChatAreaWidget(QListWidget):
                 if container and not sip.isdeleted(container):
                     container.deleteLater()
                 else:
-                    logging.warning(
-                        f"Container is None or deleted for item with rowid {bubble.rowid if bubble else 'Unknown'}")
+                    logging.warning(f"Container is None or deleted for item at row {row}")
 
         if items_to_remove:
             logging.debug(f"Removed {len(items_to_remove)} items")
             self.viewport().update()
             chat_window = self.window()
             chat_area = chat_window.chat_components.get('area_widget')
+
+            # 通知 ChatWindow 移除 image_list 中的图片
+            if removed_file_ids and hasattr(chat_window, 'remove_from_image_list'):
+                chat_window.remove_from_image_list(removed_file_ids)
+
             if hasattr(chat_window, 'adjust_scroll'):
                 chat_window.adjust_scroll()
             if show_floating_label and chat_area:
@@ -340,16 +390,17 @@ class ChatBubbleWidget(QWidget):
 
     def _create_message_text_edit(self) -> None:
         """创建用于显示附加消息的 QTextEdit"""
-        self.message_text_edit = QTextEdit(self)
+        self.message_text_edit = BubbleTextEdit(self, font=self.font_message)
         self.message_text_edit.setFont(self.font_message)
-        self.message_text_edit.setStyleSheet("background: transparent; border: none; padding: 0px;")  # 移除可能干扰的内边距
-        self.message_text_edit.setPlainText(self.message)
+        self.message_text_edit.setStyleSheet("background: transparent; border: none; padding: 0px;")
+        self.message_text_edit.setTextContent(self.message)
         self.message_text_edit.setReadOnly(True)
         self.message_text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.message_text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.message_text_edit.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.message_text_edit.document().setDocumentMargin(0)
-        self.message_text_edit.setLineWrapMode(QTextEdit.WidgetWidth)  # 按控件宽度换行
+        self.message_text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.message_text_edit.customContextMenuRequested.connect(self.show_context_menu)
 
     def _setup_progress_bar(self) -> None:
         self.progress_bar = QProgressBar(self)
@@ -420,7 +471,7 @@ class ChatBubbleWidget(QWidget):
         reply_layout.addWidget(self.reply_content_label)
 
     def _create_text_widget(self) -> None:
-        self.content_widget = QTextEdit(self)
+        self.content_widget = BubbleTextEdit(self, font=self.font_message)
         self.content_widget.setFont(self.font_message)
         self.content_widget.setStyleSheet("background: transparent; border: none;")
         self.content_widget.setReadOnly(True)
@@ -746,13 +797,13 @@ class ChatBubbleWidget(QWidget):
             message_height = int(doc.size().height())
             is_short = self._is_short_message(message_width)
             alignment = Qt.AlignRight if (self.align == "left" and is_short) else Qt.AlignLeft
-            self.message_text_edit.setAlignment(alignment)
+            self.message_text_edit.setTextContent(self.message, alignment)  # 更新对齐方式
             message_x = bx + h_padding
             if self.align == "left" and is_short:
                 message_x = bx + self._bubble_rect.width() - message_width - h_padding
             self.message_text_edit.move(int(message_x), int(message_y_offset))
             self.message_text_edit.setFixedSize(message_width, message_height)
-            message_y_offset += message_height + v_padding  # 确保时间戳不会覆盖附加消息
+            message_y_offset += message_height + v_padding
 
         # 计算时间戳或进度条位置
         total_content_height = message_y_offset if self.message_text_edit else content_y + content_size.height()
@@ -939,32 +990,49 @@ class ChatBubbleWidget(QWidget):
 
     def show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
-        if self.message_type == 'text':
-            selected_text = self.content_widget.textCursor().selectedText()
+
+        # 判断触发来源
+        sender = self.sender()
+        is_text_bubble = self.message_type == 'text' and sender == self.content_widget
+        is_message_text = sender == self.message_text_edit
+
+        if is_text_bubble or is_message_text:
+            target_widget = self.content_widget if is_text_bubble else self.message_text_edit
+            selected_text = target_widget.textCursor().selectedText()
             copy_label = "复制选中" if selected_text else "复制"
             copy_action = menu.addAction(copy_label)
-            copy_action.triggered.connect(self.copy_text)
+            copy_action.triggered.connect(lambda: self.copy_text(target_widget=target_widget))
+
+        # 下载选项（仅对媒体类型）
         if self.message_type in self.DOWNLOAD_LABELS:
             label = self.DOWNLOAD_LABELS.get(self.message_type, "文件")
             download_action = menu.addAction(f"下载{label}")
             download_action.triggered.connect(lambda: asyncio.create_task(self.download_media_file()))
+
+        # 回复选项
         reply_action = menu.addAction("回复")
         reply_action.triggered.connect(self.reply_to_message)
 
-        # 添加“进入多选模式”选项
+        # 进入多选模式选项
         chat_window = self.window()
         if hasattr(chat_window, 'enter_selection_mode') and not chat_window.is_selection_mode:
             select_mode_action = menu.addAction("选择")
             select_mode_action.triggered.connect(chat_window.enter_selection_mode)
 
-        # 添加删除选项（仅当有 rowid 时显示）
+        # 删除选项（仅当有 rowid 时显示）
         if self.rowid is not None:
             delete_action = menu.addAction("删除")
             delete_action.triggered.connect(lambda: asyncio.create_task(self.delete_message()))
 
+        # 显示菜单，动态调整位置
         if menu.actions():
             StyleGenerator.apply_style(self, "menu")
-            menu.exec_(self.mapToGlobal(pos))
+            # 根据触发控件映射全局坐标
+            if sender and sender in [self.content_widget, self.message_text_edit]:
+                global_pos = sender.mapToGlobal(pos)  # 使用触发控件的坐标映射
+            else:
+                global_pos = self.mapToGlobal(pos)  # 默认使用 ChatBubbleWidget 的坐标
+            menu.exec_(global_pos)
 
     async def delete_message(self) -> None:
         chat_window = self.window()
@@ -1003,20 +1071,29 @@ class ChatBubbleWidget(QWidget):
             return
         chat_window.show_image_viewer(self.file_id, self.original_file_name)
 
-    def copy_text(self) -> None:
-        if self.message_type == 'text' and hasattr(self, 'content_widget'):
+    def copy_text(self, target_widget=None) -> None:
+        """
+        复制文本内容，支持动态指定目标控件。
+
+        Args:
+            target_widget: 要复制文本的控件，默认为 None（使用 content_widget）
+        """
+        if not target_widget:
+            target_widget = self.content_widget if self.message_type == 'text' else None
+
+        if target_widget and isinstance(target_widget, QTextEdit):
             clipboard = QApplication.clipboard()
-            selected_text = self.content_widget.textCursor().selectedText()
+            selected_text = target_widget.textCursor().selectedText()
             if selected_text:
                 clipboard.setText(selected_text)
             else:
-                full_text = self.content_widget.toPlainText()
+                full_text = target_widget.toPlainText()
                 if full_text:
                     clipboard.setText(full_text)
                 else:
                     QMessageBox.information(self, "提示", "消息内容为空，无法复制")
         else:
-            QMessageBox.critical(self, "错误", "无法复制：当前不是文本消息")
+            QMessageBox.critical(self, "错误", "无法复制：目标控件无效或不是文本消息")
 
     def reply_to_message(self) -> None:
         chat_window = self.window()
