@@ -1437,10 +1437,10 @@ class ChatWindow(QWidget):
         logging.debug("进入 proc_add_friend 方法")
         if friend_name := dialog.input.text().strip():
             logging.debug(f"尝试添加好友: {friend_name}")
-            res = await self.client.add_friend(friend_name)
-            logging.debug(f"add_friend 返回结果: {res}")
+            resp = await self.client.add_friend(friend_name)  # 获取完整响应
+            logging.debug(f"add_friend 返回结果: {resp}")
 
-            # 确保 ChatWindow 可见
+            # 确保窗口可见
             if not self.isVisible():
                 logging.debug("ChatWindow 未显示，显示窗口")
                 self.show()
@@ -1448,19 +1448,16 @@ class ChatWindow(QWidget):
                 logging.debug("ChatWindow 已最小化，恢复窗口")
                 self.showNormal()
 
-            # 判断并显示 FloatingLabel
-            if "成功" in res:
+            # 根据 status 判断结果
+            if resp.get("status") == "success":
                 logging.debug(f"添加成功，创建 FloatingLabel: 已成功添加 {friend_name} 为好友")
                 label = FloatingLabel(f"已成功添加 {friend_name} 为好友", self)
-                logging.debug(f"FloatingLabel 创建完成，位置: ({label.x()}, {label.y()}), 大小: {label.size()}")
             else:
-                logging.debug(f"添加失败，创建 FloatingLabel: 添加失败: {res}")
-                label = FloatingLabel(f"添加失败: {res}", self)
-                logging.debug(f"FloatingLabel 创建完成，位置: ({label.x()}, {label.y()}), 大小: {label.size()}")
+                logging.debug(f"添加失败，创建 FloatingLabel: 添加失败: {resp.get('message', '未知错误')}")
+                label = FloatingLabel(f"添加失败: {resp.get('message', '未知错误')}", self)
 
-            # 强制显示并刷新
             label.show()
-            label.raise_()  # 提升到顶层
+            label.raise_()
             QApplication.processEvents()
             logging.debug("已调用 QApplication.processEvents()")
 

@@ -207,43 +207,8 @@ def send_response(client_sock: socket.socket, response: dict):
     except Exception as e:
         logging.error(f"发送响应失败: {e}")
 
-def sync_conversation_to_db(username: str, friend: str):
-    """同步会话数据到数据库"""
-    with conversations_lock:
-        sorted_key = tuple(sorted([username, friend]))
-        if sorted_key not in conversations:
-            return
-        last_update_time = conversations[sorted_key]['last_update_time']
-    current_time = datetime.now()
-    if (current_time - last_update_time).total_seconds() >= SYNC_INTERVAL:
-        conn = get_db_connection()
-        if not conn:
-            logging.error(f"同步会话 {username}-{friend} 到数据库失败：数据库连接失败")
-            return
-        try:
-            cursor = conn.cursor()
-            last_message = conversations[sorted_key]['last_message']
-            cursor.execute('''
-                INSERT INTO conversations (username, friend, lastmessageid, lastupdatetime)
-                VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE lastmessageid = %s, lastupdatetime = %s
-            ''', (sorted_key[0], sorted_key[1], last_message['rowid'], last_update_time,
-                  last_message['rowid'], last_update_time))
-            conn.commit()
-            logging.debug(f"会话 {username}-{friend} 已同步到数据库")
-        except Error as e:
-            logging.error(f"同步会话 {username}-{friend} 到数据库失败: {e}")
-        finally:
-            conn.close()
-
-def schedule_sync(user1: str, user2: str):
-    """调度会话同步"""
-    timer = Timer(SYNC_INTERVAL, sync_conversation_to_db, args=(user1, user2))
-    timer.daemon = True
-    timer.start()
 
 def update_user_profile(request: dict, client_sock: socket.socket) -> dict:
-    """更新用户资料"""
     req_type = request.get("type")
     username = request.get("username")
     request_id = request.get("request_id")
@@ -254,12 +219,16 @@ def update_user_profile(request: dict, client_sock: socket.socket) -> dict:
     conn = get_db_connection()
     if not conn:
         return {"type": req_type, "status": "error", "message": "数据库连接失败", "request_id": request_id}
+
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT username, avatars, avatar_path, signs FROM users WHERE username = %s", (username,))
         user = cursor.fetchone()
         if not user:
             return {"type": req_type, "status": "error", "message": "用户不存在", "request_id": request_id}
+
+        update_fields = []
+        update_values = []
 
         if req_type == "upload_avatar" and file_data_b64:
             avatar_dir = os.path.join(BASE_DIR, "avatars")
@@ -271,29 +240,31 @@ def update_user_profile(request: dict, client_sock: socket.socket) -> dict:
                 with open(avatar_path, "wb") as f:
                     f.write(file_data)
                 logging.debug(f"头像保存成功: {avatar_path}")
+                update_fields.extend(["avatars = %s", "avatar_path = %s"])
+                update_values.extend([original_file_name, avatar_path])
             except Exception as e:
                 logging.error(f"头像保存失败: {e}")
                 return {"type": req_type, "status": "error", "message": "头像保存失败", "request_id": request_id}
 
-        update_fields = []
-        update_values = []
         if new_sign is not None:
             update_fields.append("signs = %s")
             update_values.append(new_sign)
         if new_nickname is not None:
             update_fields.append("names = %s")
             update_values.append(new_nickname)
-        if 'original_file_name' in locals():
-            update_fields.append("avatars = %s")
-            update_fields.append("avatar_path = %s")
-            update_values.extend([original_file_name, avatar_path])
 
         if update_fields:
             sql = f"UPDATE users SET {', '.join(update_fields)} WHERE username = %s"
             update_values.append(username)
+            logging.debug(f"执行 SQL: {sql}")
+            logging.debug(f"参数: {update_values}")
             cursor.execute(sql, tuple(update_values))
             conn.commit()
-            logging.debug(f"更新用户信息成功: {req_type}，用户: {username}")
+            logging.debug(f"更新用户信息成功: {req_type}，用户: {username}，新名字: {new_nickname}")
+        else:
+            logging.warning(f"没有需要更新的字段: {req_type}，用户: {username}")
+            return {"type": req_type, "status": "error", "message": "没有需要更新的字段", "request_id": request_id}
+
     except Error as e:
         logging.error(f"更新用户信息失败: {e}")
         return {"type": req_type, "status": "error", "message": "数据库更新失败", "request_id": request_id}
@@ -303,6 +274,8 @@ def update_user_profile(request: dict, client_sock: socket.socket) -> dict:
     response = {"type": req_type, "status": "success", "message": "更新成功", "request_id": request_id}
     if req_type == "upload_avatar" and 'original_file_name' in locals():
         response["avatar_id"] = original_file_name
+
+    push_friends_update(username, username)  # 更新后推送
     return response
 
 def update_friend_remarks(request: dict, client_sock: socket.socket) -> dict:
@@ -411,24 +384,135 @@ def push_friends_list(username: str):
             except Exception as e:
                 logging.error(f"推送好友列表给 {username} 失败: {e}")
 
-def push_friends_update(username: str):
-    """推送好友更新"""
-    push_friends_list(username)
+
+def push_friends_update(username: str, changed_friend: str = None):
+    """
+    推送好友更新，只推送指定的变更好友信息
+    参数:
+        username: 当前用户的用户名
+        changed_friend: 有变更的好友用户名，如果为 None 则不推送具体变更
+    """
     conn = get_db_connection()
     if not conn:
-        logging.error("数据库连接失败，无法获取相关好友信息")
+        logging.error("数据库连接失败，无法推送好友更新")
         return
     try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT username FROM friends WHERE friend = %s", (username,))
-        related_users = [row[0] for row in cursor.fetchall()]
+        cursor = conn.cursor(dictionary=True)
+
+        # 获取当前用户的所有好友，用于更新相关用户的列表
+        cursor.execute("SELECT friend FROM friends WHERE username = %s", (username,))
+        related_users = [username] + [row['friend'] for row in cursor.fetchall()]
+
+        # 如果指定了changed_friend，只推送该好友的变更信息
+        if changed_friend:
+            cursor.execute("SELECT f.friend, f.Remarks, u.avatars, u.names, u.signs "
+                           "FROM friends f "
+                           "LEFT JOIN users u ON f.friend = u.username "
+                           "WHERE f.username = %s AND f.friend = %s",
+                           (username, changed_friend))
+            friend_row = cursor.fetchone()
+            if friend_row:
+                friend_username = friend_row['friend']
+                remarks = friend_row['Remarks']
+                avatar_id = friend_row['avatars'] if friend_row['avatars'] else ""
+                name = friend_row['names'] if friend_row['names'] else friend_username
+                sign = friend_row['signs'] if friend_row['signs'] else ""
+                display_name = remarks if remarks else name
+
+                # 获取最后会话消息
+                last_message_data = None
+                with conversations_lock:
+                    sorted_key = tuple(sorted([username, friend_username]))
+                    convo_data = conversations.get(sorted_key)
+                    if convo_data:
+                        last_message = convo_data["last_message"]
+                        content = ("[文件]" if last_message["attachment_type"] == "file" else
+                                   "[图片]" if last_message["attachment_type"] == "image" else
+                                   "[视频]" if last_message["attachment_type"] == "video" else
+                                   last_message["message"])
+                        last_message_data = {
+                            "sender": last_message["sender"],
+                            "content": content,
+                            "last_update_time": convo_data['last_update_time'].strftime('%Y-%m-%d %H:%M:%S')
+                        }
+
+                # 构建单个好友变更信息
+                friend_item = {
+                    "username": friend_username,
+                    "avatar_id": avatar_id,
+                    "name": display_name,
+                    "sign": sign,
+                    "online": friend_username in clients,
+                    "conversations": last_message_data
+                }
+
+                # 推送给当前用户
+                with clients_lock:
+                    if username in clients:
+                        response = {
+                            "type": "friend_update",
+                            "status": "success",
+                            "friend": friend_item  # 只推送单个好友信息
+                        }
+                        send_response(clients[username], response)
+                        logging.debug(f"推送单个好友更新给 {username}: {response}")
+
+        # 更新所有相关用户（包括自己和好友）的在线状态
+        for user in related_users:
+            with clients_lock:
+                if user in clients and user != username:
+                    cursor.execute("SELECT f.friend, f.Remarks, u.avatars, u.names, u.signs "
+                                   "FROM friends f "
+                                   "LEFT JOIN users u ON f.friend = u.username "
+                                   "WHERE f.username = %s AND f.friend = %s",
+                                   (user, username))
+                    friend_row = cursor.fetchone()
+                    if friend_row:
+                        friend_username = friend_row['friend']
+                        remarks = friend_row['Remarks']
+                        avatar_id = friend_row['avatars'] if friend_row['avatars'] else ""
+                        name = friend_row['names'] if friend_row['names'] else friend_username
+                        sign = friend_row['signs'] if friend_row['signs'] else ""
+                        display_name = remarks if remarks else name
+
+                        # 获取最后会话消息
+                        last_message_data = None
+                        with conversations_lock:
+                            sorted_key = tuple(sorted([user, friend_username]))
+                            convo_data = conversations.get(sorted_key)
+                            if convo_data:
+                                last_message = convo_data["last_message"]
+                                content = ("[文件]" if last_message["attachment_type"] == "file" else
+                                           "[图片]" if last_message["attachment_type"] == "image" else
+                                           "[视频]" if last_message["attachment_type"] == "video" else
+                                           last_message["message"])
+                                last_message_data = {
+                                    "sender": last_message["sender"],
+                                    "content": content,
+                                    "last_update_time": convo_data['last_update_time'].strftime('%Y-%m-%d %H:%M:%S')
+                                }
+
+                        friend_item = {
+                            "username": friend_username,
+                            "avatar_id": avatar_id,
+                            "name": display_name,
+                            "sign": sign,
+                            "online": friend_username in clients,
+                            "conversations": last_message_data
+                        }
+
+                        response = {
+                            "type": "friend_update",
+                            "status": "success",
+                            "friend": friend_item
+                        }
+                        send_response(clients[user], response)
+                        logging.debug(f"推送单个好友更新给相关用户 {user}: {response}")
+
     except Exception as e:
-        logging.error(f"获取相关好友列表失败: {e}")
-        related_users = []
+        logging.error(f"推送好友更新失败: {e}")
     finally:
         conn.close()
-    for user in related_users:
-        push_friends_list(user)
 
 def authenticate(request: dict, client_sock: socket.socket) -> dict:
     """用户认证"""
@@ -962,8 +1046,8 @@ def add_friend(request: dict, client_sock: socket.socket) -> dict:
     finally:
         conn.close()
     if response.get("status") == "success":
-        push_friends_update(username)
-        push_friends_update(friend)
+        push_friends_update(username, friend)
+        push_friends_update(friend, username)
     return response
 
 def handle_client(client_sock: socket.socket, client_addr):
@@ -994,6 +1078,7 @@ def handle_client(client_sock: socket.socket, client_addr):
                 send_response(client_sock, response)
                 if response.get("status") == "success":
                     logged_in_user = request.get("username")
+                    push_friends_list(logged_in_user)
                     push_friends_update(logged_in_user)
                 continue
             elif req_type == "send_message":

@@ -192,6 +192,20 @@ class ChatClient(QObject):
                 elif resp.get("type") == "friend_list_update":
                     self.friends = resp.get("friends", [])
                     self.friend_list_updated.emit(self.friends)
+                elif resp.get("type") == "friend_update":
+                    friend_data = resp.get("friend", {})
+                    if friend_data:
+                        friend_username = friend_data.get("username")
+                        # 更新内存中的好友列表
+                        for i, f in enumerate(self.friends):
+                            if f.get("username") == friend_username:
+                                self.friends[i] = friend_data
+                                break
+                        else:
+                            self.friends.append(friend_data)
+                        # 直接用 conversations_updated 信号，传入 affected_users
+                        self.conversations_updated.emit(self.friends, [friend_username], [], False)
+                        logging.debug(f"处理 friend_update，更新好友 {friend_username}")
                 elif resp.get("type") == "deleted_messages":
                     await self.parsing_delete_message(resp)
                 elif resp.get("type") == "Update_Remarks":
@@ -516,11 +530,13 @@ class ChatClient(QObject):
         resp = await self.send_request(req)
         return resp
 
-    async def download_media(self, file_id: str, save_path: str, download_type: str = "default", progress_callback=None):
+    async def download_media(self, file_id: str, save_path: str, download_type: str = "default",
+                             progress_callback=None):
         received_size = 0
         offset = 0
+        temp_path = save_path + ".tmp"  # 使用临时文件避免覆盖未完成的文件
         try:
-            with open(save_path, "wb") as f:
+            with open(temp_path, "wb") as f:
                 while True:
                     req = {
                         "type": "download_media",
@@ -548,15 +564,17 @@ class ChatClient(QObject):
                         break
             if total_size and received_size != total_size:
                 return {"status": "error", "message": f"下载不完整: 收到 {received_size} / {total_size} 字节"}
+            # 下载完成后重命名，确保原子性
+            os.rename(temp_path, save_path)
             logging.debug(f"下载完成: file_id={file_id}, save_path={save_path}")
             return {"status": "success", "message": "下载成功", "save_path": save_path}
         except Exception as e:
-            if os.path.exists(save_path):
-                os.remove(save_path)
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
             logging.error(f"下载失败: file_id={file_id}, error={str(e)}")
             return {"status": "error", "message": f"下载失败: {str(e)}"}
 
-    async def add_friend(self, friend_username: str) -> str:
+    async def add_friend(self, friend_username: str) -> dict:  # 返回类型改为 dict
         req = {
             "type": "add_friend",
             "username": self.username,
@@ -564,7 +582,7 @@ class ChatClient(QObject):
             "request_id": str(uuid.uuid4())
         }
         resp = await self.send_request(req)
-        return resp.get("message", "")
+        return resp
 
     async def parse_response(self, resp: dict) -> dict:
         history = resp.get("chat_history", [])
