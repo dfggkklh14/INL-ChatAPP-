@@ -530,13 +530,11 @@ class ChatClient(QObject):
         resp = await self.send_request(req)
         return resp
 
-    async def download_media(self, file_id: str, save_path: str, download_type: str = "default",
-                             progress_callback=None):
+    async def download_media(self, file_id: str, save_path: str, download_type: str = "default", progress_callback=None):
         received_size = 0
         offset = 0
-        temp_path = save_path + ".tmp"  # 使用临时文件避免覆盖未完成的文件
         try:
-            with open(temp_path, "wb") as f:
+            with open(save_path, "wb") as f:
                 while True:
                     req = {
                         "type": "download_media",
@@ -564,13 +562,11 @@ class ChatClient(QObject):
                         break
             if total_size and received_size != total_size:
                 return {"status": "error", "message": f"下载不完整: 收到 {received_size} / {total_size} 字节"}
-            # 下载完成后重命名，确保原子性
-            os.rename(temp_path, save_path)
             logging.debug(f"下载完成: file_id={file_id}, save_path={save_path}")
             return {"status": "success", "message": "下载成功", "save_path": save_path}
         except Exception as e:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            if os.path.exists(save_path):
+                os.remove(save_path)
             logging.error(f"下载失败: file_id={file_id}, error={str(e)}")
             return {"status": "error", "message": f"下载失败: {str(e)}"}
 

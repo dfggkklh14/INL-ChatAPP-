@@ -1154,23 +1154,14 @@ class ChatWindow(QWidget):
                 cache_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "avatars")
                 os.makedirs(cache_dir, exist_ok=True)
 
-                existing_items = {}
-                for i in range(self.friend_list.count()):
-                    item = self.friend_list.item(i)
-                    widget = self.friend_list.itemWidget(item)
-                    if widget and widget.username and not sip.isdeleted(widget):
-                        existing_items[widget.username] = (item, widget)
-
-                # 无论精准更新还是全量更新，先对好友列表排序
                 sorted_friends = self._sort_friends(friends)
 
                 if affected_users:
-                    # 精准更新逻辑
+                    # 精准更新
                     for uname in affected_users:
                         friend = next((f for f in sorted_friends if f.get("username") == uname), None)
                         if not friend:
                             continue
-                        # 更新逻辑保持不变
                         name = friend.get("name", uname)
                         conv = friend.get("conversations")
                         last_message = conv.get("content", "") if conv else ""
@@ -1179,19 +1170,21 @@ class ChatWindow(QWidget):
                         online = friend.get("online", False)
                         avatar_id = friend.get("avatar_id", "")
 
-                        if uname in existing_items:
-                            item, widget = existing_items[uname]
-                            # 更新 widget 属性并检查是否需要重新排序
-                            widget.name = name
-                            widget.online = online
-                            widget.unread = unread_count
-                            widget.last_message_time = last_message_time
-                            widget.last_message = last_message
-                            widget.avatar_id = avatar_id
-                            if widget.avatar_id != avatar_id or not widget.avatar_pixmap:
+                        # 检查现有项
+                        for i in range(self.friend_list.count()):
+                            item = self.friend_list.item(i)
+                            widget = self.friend_list.itemWidget(item)
+                            if widget and widget.username == uname and not sip.isdeleted(widget):
+                                widget.name = name
+                                widget.online = online
+                                widget.unread = unread_count
+                                widget.last_message_time = last_message_time
+                                widget.last_message = last_message
+                                widget.avatar_id = avatar_id
                                 await self._update_widget_avatar(widget, avatar_id, cache_dir)
-                            widget.update_display()
+                                break
                         else:
+                            # 新增项
                             item = QListWidgetItem(self.friend_list)
                             item.setSizeHint(QSize(self.friend_list.width(), 55))
                             widget = FriendItemWidget(uname, name, online, unread_count, None, last_message_time,
@@ -1200,48 +1193,48 @@ class ChatWindow(QWidget):
                             await self._update_widget_avatar(widget, avatar_id, cache_dir)
                             self.friend_list.setItemWidget(item, widget)
                             theme_manager.register(widget)
-                            widget.update_display()
 
-                # 全量更新或初次加载
-                self.friend_list.clear()  # 清空列表并重新填充
-                for friend in sorted_friends:
-                    if not friend or "username" not in friend:
-                        continue
-                    uname = friend["username"]
-                    name = friend.get("name", uname)
-                    conv = friend.get("conversations")
-                    last_message = conv.get("content", "") if conv else ""
-                    last_message_time = conv.get("last_update_time", "") if conv else ""
-                    unread_count = self.client.unread_messages.get(uname, 0)
-                    online = friend.get("online", False)
-                    avatar_id = friend.get("avatar_id", "")
+                else:
+                    # 全量更新
+                    self.friend_list.clear()
+                    for friend in sorted_friends:
+                        if not friend or "username" not in friend:
+                            continue
+                        uname = friend["username"]
+                        name = friend.get("name", uname)
+                        conv = friend.get("conversations")
+                        last_message = conv.get("content", "") if conv else ""
+                        last_message_time = conv.get("last_update_time", "") if conv else ""
+                        unread_count = self.client.unread_messages.get(uname, 0)
+                        online = friend.get("online", False)
+                        avatar_id = friend.get("avatar_id", "")
 
-                    item = QListWidgetItem(self.friend_list)
-                    item.setSizeHint(QSize(self.friend_list.width(), 55))
-                    widget = FriendItemWidget(uname, name, online, unread_count, None, last_message_time, last_message)
-                    widget.avatar_id = avatar_id
-                    await self._update_widget_avatar(widget, avatar_id, cache_dir)
-                    self.friend_list.setItemWidget(item, widget)
-                    theme_manager.register(widget)
-                    widget.update_display()
+                        item = QListWidgetItem(self.friend_list)
+                        item.setSizeHint(QSize(self.friend_list.width(), 55))
+                        widget = FriendItemWidget(uname, name, online, unread_count, None, last_message_time,
+                                                  last_message)
+                        widget.avatar_id = avatar_id
+                        await self._update_widget_avatar(widget, avatar_id, cache_dir)
+                        self.friend_list.setItemWidget(item, widget)
+                        theme_manager.register(widget)
 
-                # 恢复当前选择
-                if current_friend:
-                    for i in range(self.friend_list.count()):
-                        item = self.friend_list.item(i)
-                        widget = self.friend_list.itemWidget(item)
-                        if widget and widget.username == current_friend and not sip.isdeleted(widget):
-                            if not item.isSelected():
-                                item.setSelected(True)
-                            if (online_widget := self.chat_components.get('online')):
-                                online_status = any(
-                                    f["username"] == current_friend and f.get("online", False) for f in friends if f)
-                                online_widget.update_status(current_friend, online_status)
-                            break
+                    # 恢复当前选择
+                    if current_friend:
+                        for i in range(self.friend_list.count()):
+                            item = self.friend_list.item(i)
+                            widget = self.friend_list.itemWidget(item)
+                            if widget and widget.username == current_friend and not sip.isdeleted(widget):
+                                if not item.isSelected():
+                                    item.setSelected(True)
+                                if (online_widget := self.chat_components.get('online')):
+                                    online_status = any(
+                                        f["username"] == current_friend and f.get("online", False) for f in friends if
+                                        f)
+                                    online_widget.update_status(current_friend, online_status)
+                                break
 
                 self.friend_list.updateGeometry()
                 logging.debug(f"好友列表更新完成，总数: {self.friend_list.count()}")
-
             except Exception as e:
                 logging.error(f"更新好友列表时发生异常: {e}")
 
@@ -1265,27 +1258,38 @@ class ChatWindow(QWidget):
         try:
             if not avatar_id:
                 widget.avatar_pixmap = None
+                widget.update_display()  # 显式更新 UI
                 return
 
             save_path = os.path.join(cache_dir, avatar_id)
             avatar_pixmap = None
 
+            # 检查本地文件是否存在且有效
             if os.path.exists(save_path):
                 avatar_pixmap = QPixmap(save_path)
                 if avatar_pixmap.isNull():
-                    os.remove(save_path)
+                    os.remove(save_path)  # 删除无效文件
                     avatar_pixmap = None
+
+            # 如果本地没有有效头像，下载并等待完成
             if not avatar_pixmap:
                 resp = await self.client.download_media(avatar_id, save_path, "avatar")
                 if resp.get("status") == "success":
                     avatar_pixmap = QPixmap(save_path)
                     if avatar_pixmap.isNull():
+                        os.remove(save_path)  # 下载后仍无效，删除
                         avatar_pixmap = None
                 else:
+                    logging.error(f"头像下载失败: avatar_id={avatar_id}, error={resp.get('message')}")
                     avatar_pixmap = None
-            widget.avatar_pixmap = avatar_pixmap if avatar_pixmap else None
+
+            # 设置头像并更新 UI
+            widget.avatar_pixmap = avatar_pixmap
+            widget.update_display()  # 显式触发 UI 更新
         except Exception as e:
+            logging.error(f"更新头像时出错: avatar_id={avatar_id}, error={e}")
             widget.avatar_pixmap = None
+            widget.update_display()  # 出错时也要更新 UI
 
     async def load_chat_history(self, reset: bool = False) -> None:
         if reset:
