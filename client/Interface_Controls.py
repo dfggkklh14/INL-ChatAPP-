@@ -4,17 +4,18 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timedelta
 from typing import Optional, Any, List
 
 from PIL import Image
 import imageio
 
 from PyQt5 import sip
-from PyQt5.QtCore import Qt, QEasingCurve, QPropertyAnimation, QTimer, pyqtSignal
-from PyQt5.QtGui import QPainter, QColor, QFont, QFontMetrics, QPixmap, QImage, QIcon, QPainterPath, QPen, QResizeEvent
+from PyQt5.QtCore import Qt, QEasingCurve, QPropertyAnimation, QTimer, pyqtSignal, QRegularExpression
+from PyQt5.QtGui import QPainter, QColor, QFont, QFontMetrics, QPixmap, QImage, QIcon, QPainterPath, QPen, QResizeEvent, \
+    QRegularExpressionValidator
 from PyQt5.QtWidgets import QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QGraphicsOpacityEffect, QGridLayout, \
-    QPushButton
-
+    QPushButton, QDialog, QLineEdit, QMessageBox
 
 CACHE_ROOT = os.path.join(os.path.dirname(__file__), "Chat_DATA")
 THEME_CONFIG_PATH = os.path.join(CACHE_ROOT, "config/theme_config.json")
@@ -323,6 +324,86 @@ def generate_thumbnail(file_path: str, file_type: str, output_dir: str = "client
 
 
 # ---------- 自定义小部件 ----------
+
+def format_time(timestamp: str) -> str:
+    try:
+        dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%H:%M") if datetime.now() - dt < timedelta(days=1) else dt.strftime("%m.%d %H:%M")
+    except ValueError:
+        return datetime.now().strftime("%H:%M")
+
+def create_themed_message_box(parent: QWidget, title: str, text: str, is_No: bool) -> QMessageBox:
+    msg_box = QMessageBox(parent)
+    msg_box.setWindowTitle(title)
+    msg_box.setText(text)
+    msg_box.setIcon(QMessageBox.Information)
+    theme = theme_manager.current_theme
+    msg_box.setStyleSheet(f"QMessageBox {{ background-color: {theme['widget_bg']}; }}"
+                          f"QLabel {{ color: {theme['font_color']}; }}")
+    ok_button = msg_box.addButton("确认", QMessageBox.AcceptRole)
+    if is_No:
+        no_button = msg_box.addButton("取消", QMessageBox.RejectRole)
+    ok_button.setFixedSize(50, 25)
+    no_button.setFixedSize(50, 25)
+    StyleGenerator.apply_style(ok_button, "button", extra="border-radius: 4px;")
+    StyleGenerator.apply_style(no_button, "button", extra="border-radius: 4px;")
+    for label in msg_box.findChildren(QLabel):
+        StyleGenerator.apply_style(label, "label")
+    return msg_box
+
+def create_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode) -> QLineEdit:
+    le = QLineEdit(parent)
+    le.setPlaceholderText(placeholder)
+    le.setFixedSize(200, 30)
+    le.setEchoMode(echo)
+    StyleGenerator.apply_style(le, "line_edit")
+    regex = QRegularExpression(r'^[a-zA-Z0-9!@#$%^&*()_+={}\[\]:;"\'<>,.?/\\|`~\-]*$')
+    le.setValidator(QRegularExpressionValidator(regex, le))
+    return le
+
+# 添加好友对话框
+class AddFriendDialog(QDialog):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("添加好友")
+        self.setFixedSize(300, 100)
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        self.label = QLabel("请输入好友用户名：", self)
+        StyleGenerator.apply_style(self.label, "label")  # 应用主题字体颜色
+
+        # 使用风格化的输入框
+        self.input = create_line_edit(self, "好友用户名", QLineEdit.Normal)
+
+        btn_layout = QHBoxLayout()
+        self.cancel_btn = QPushButton("取消", self)
+        self.cancel_btn.setFixedHeight(30)
+        StyleGenerator.apply_style(self.cancel_btn, "button", extra="border-radius: 4px;")  # 风格化按钮
+        self.cancel_btn.clicked.connect(self.reject)
+
+        self.confirm_btn = QPushButton("确认", self)
+        self.confirm_btn.setFixedHeight(30)
+        StyleGenerator.apply_style(self.confirm_btn, "button", extra="border-radius: 4px;")  # 风格化按钮
+        self.confirm_btn.setEnabled(False)
+        self.confirm_btn.clicked.connect(self.accept)
+
+        layout.addWidget(self.label)
+        layout.addWidget(self.input)
+        btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addWidget(self.confirm_btn)
+        layout.addLayout(btn_layout)
+
+        self.input.textChanged.connect(lambda text: self.confirm_btn.setEnabled(bool(text.strip())))
+        self.update_theme(theme_manager.current_theme)
+
+    def update_theme(self, theme: dict) -> None:
+        StyleGenerator.apply_style(self.label, "label")
+        StyleGenerator.apply_style(self.input, "line_edit")
+        StyleGenerator.apply_style(self.cancel_btn, "button", extra="border-radius: 4px;")
+        StyleGenerator.apply_style(self.confirm_btn, "button", extra="border-radius: 4px;")
+
 
 class FloatingLabel(QLabel):
     def __init__(self, text: str, parent=None):

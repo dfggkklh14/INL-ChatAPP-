@@ -309,67 +309,117 @@ def update_friend_remarks(request: dict, client_sock: socket.socket) -> dict:
     return response
 
 
-def push_friends_list(username: str):
-    """推送好友列表并在每个好友项中包含会话数据，去掉重复的 time 字段"""
-    conn = get_db_connection()
-    if not conn:
-        logging.error("数据库连接失败，无法推送好友列表")
-        return
+def build_friend_item(username: str, friend_usernames: list = None, cursor=None) -> dict:
+    """批量构建好友信息，支持传入好友列表或自动查询"""
+    # 如果未传入 cursor，创建独立的数据库连接
+    standalone_conn = None
+    if cursor is None:
+        standalone_conn = get_db_connection()
+        if not standalone_conn:
+            logging.error("数据库连接失败，无法构建好友信息")
+            return {}
+        cursor = standalone_conn.cursor(dictionary=True)
+
     try:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT f.friend, f.Remarks FROM friends f WHERE f.username = %s", (username,))
-        friend_rows = cursor.fetchall()
-        friends = []
+        # 如果未传入好友列表，自动查询
+        if friend_usernames is None:
+            cursor.execute("SELECT friend FROM friends WHERE username = %s", (username,))
+            friend_usernames = [row['friend'] for row in cursor.fetchall()]
 
-        for row in friend_rows:
-            friend_username = row['friend']
-            remarks = row['Remarks']
-            cursor.execute("SELECT avatars, names, signs FROM users WHERE username = %s", (friend_username,))
-            user_info = cursor.fetchone()
-            avatar_id = user_info['avatars'] if user_info and user_info['avatars'] else ""
-            name = user_info['names'] if user_info and user_info['names'] else friend_username
-            sign = user_info['signs'] if user_info and user_info['signs'] else ""
-            display_name = remarks if remarks else name
+        if not friend_usernames:
+            return {}
 
-            # 获取该好友的最后会话消息
-            last_message_data = None
-            with conversations_lock:
+        # 批量查询好友信息
+        placeholders = ','.join(['%s'] * len(friend_usernames))
+        query = f"""
+            SELECT f.friend, f.Remarks, u.avatars, u.names, u.signs 
+            FROM friends f 
+            LEFT JOIN users u ON f.friend = u.username 
+            WHERE f.username = %s AND f.friend IN ({placeholders})
+        """
+        cursor.execute(query, [username] + friend_usernames)
+        friend_data = {row['friend']: row for row in cursor.fetchall()}
+
+        # 构建结果
+        result = {}
+        with conversations_lock:
+            for friend_username in friend_usernames:
+                remarks = None
+                avatar_id = ""
+                name = friend_username
+                sign = ""
+
+                if friend_username in friend_data:
+                    row = friend_data[friend_username]
+                    remarks = row['Remarks']
+                    avatar_id = row['avatars'] if row['avatars'] else ""
+                    name = row['names'] if row['names'] else friend_username
+                    sign = row['signs'] if row['signs'] else ""
+
+                display_name = remarks if remarks else name
+
+                last_message_data = None
                 sorted_key = tuple(sorted([username, friend_username]))
                 convo_data = conversations.get(sorted_key)
                 if convo_data:
                     last_message = convo_data["last_message"]
-                    # 根据消息类型设置 content
-                    if last_message["attachment_type"] == "file":
-                        content = "[文件]"
-                    elif last_message["attachment_type"] == "image":
-                        content = "[图片]"
-                    elif last_message["attachment_type"] == "video":
-                        content = "[视频]"
-                    else:
-                        content = last_message["message"]
-
+                    content = get_conversation_content(last_message["attachment_type"], last_message["message"])
                     last_message_data = {
                         "sender": last_message["sender"],
                         "content": content,
                         "last_update_time": convo_data['last_update_time'].strftime('%Y-%m-%d %H:%M:%S')
                     }
 
-            # 构建好友项，直接包含会话数据
-            friend_item = {
-                "username": friend_username,
-                "avatar_id": avatar_id,
-                "name": display_name,
-                "sign": sign,
-                "online": friend_username in clients,
-                "conversations": last_message_data  # 如果没有会话，则为 None
-            }
-            friends.append(friend_item)
+                result[friend_username] = {
+                    "username": friend_username,
+                    "avatar_id": avatar_id,
+                    "name": display_name,
+                    "sign": sign,
+                    "online": friend_username in clients,
+                    "conversations": last_message_data
+                }
+        return result
 
     except Exception as e:
+        logging.error(f"构建好友信息失败: {e}")
+        return {}
+    finally:
+        if standalone_conn:
+            standalone_conn.close()
+
+def get_friend_usernames(username: str, include_self: bool = False) -> list:
+    """获取用户的好友列表，可选择是否包含自己"""
+    conn = get_db_connection()
+    if not conn:
+        logging.error("数据库连接失败，无法获取好友列表")
+        return []
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT friend FROM friends WHERE username = %s", (username,))
+        friend_usernames = [row['friend'] for row in cursor.fetchall()]
+        if include_self:
+            friend_usernames.append(username)
+        return friend_usernames
+    except Exception as e:
         logging.error(f"获取好友列表失败: {e}")
-        return
+        return []
     finally:
         conn.close()
+
+def get_conversation_content(attachment_type: str, message: str) -> str:
+    """根据附件类型生成会话内容"""
+    if attachment_type == "file":
+        return "[文件]"
+    elif attachment_type == "image":
+        return "[图片]"
+    elif attachment_type == "video":
+        return "[视频]"
+    return message
+
+def push_friends_list(username: str):
+    """推送好友列表并包含会话数据"""
+    friends_dict = build_friend_item(username)  # 不传入 friend_usernames，自动查询
+    friends = list(friends_dict.values())
 
     with clients_lock:
         if username in clients:
@@ -378,141 +428,41 @@ def push_friends_list(username: str):
                 "status": "success",
                 "friends": friends
             }
-            try:
-                send_response(clients[username], response)
-                logging.debug(f"推送好友列表给 {username}: {response}")
-            except Exception as e:
-                logging.error(f"推送好友列表给 {username} 失败: {e}")
-
+            send_response(clients[username], response)
+            logging.debug(f"推送好友列表给 {username}: {response}")
 
 def push_friends_update(username: str, changed_friend: str = None):
-    """
-    推送好友更新，只推送指定的变更好友信息
-    参数:
-        username: 当前用户的用户名
-        changed_friend: 有变更的好友用户名，如果为 None 则不推送具体变更
-    """
-    conn = get_db_connection()
-    if not conn:
-        logging.error("数据库连接失败，无法推送好友更新")
-        return
-    try:
-        cursor = conn.cursor(dictionary=True)
-
-        # 获取当前用户的所有好友，用于更新相关用户的列表
-        cursor.execute("SELECT friend FROM friends WHERE username = %s", (username,))
-        related_users = [username] + [row['friend'] for row in cursor.fetchall()]
-
-        # 如果指定了changed_friend，只推送该好友的变更信息
-        if changed_friend:
-            cursor.execute("SELECT f.friend, f.Remarks, u.avatars, u.names, u.signs "
-                           "FROM friends f "
-                           "LEFT JOIN users u ON f.friend = u.username "
-                           "WHERE f.username = %s AND f.friend = %s",
-                           (username, changed_friend))
-            friend_row = cursor.fetchone()
-            if friend_row:
-                friend_username = friend_row['friend']
-                remarks = friend_row['Remarks']
-                avatar_id = friend_row['avatars'] if friend_row['avatars'] else ""
-                name = friend_row['names'] if friend_row['names'] else friend_username
-                sign = friend_row['signs'] if friend_row['signs'] else ""
-                display_name = remarks if remarks else name
-
-                # 获取最后会话消息
-                last_message_data = None
-                with conversations_lock:
-                    sorted_key = tuple(sorted([username, friend_username]))
-                    convo_data = conversations.get(sorted_key)
-                    if convo_data:
-                        last_message = convo_data["last_message"]
-                        content = ("[文件]" if last_message["attachment_type"] == "file" else
-                                   "[图片]" if last_message["attachment_type"] == "image" else
-                                   "[视频]" if last_message["attachment_type"] == "video" else
-                                   last_message["message"])
-                        last_message_data = {
-                            "sender": last_message["sender"],
-                            "content": content,
-                            "last_update_time": convo_data['last_update_time'].strftime('%Y-%m-%d %H:%M:%S')
-                        }
-
-                # 构建单个好友变更信息
-                friend_item = {
-                    "username": friend_username,
-                    "avatar_id": avatar_id,
-                    "name": display_name,
-                    "sign": sign,
-                    "online": friend_username in clients,
-                    "conversations": last_message_data
-                }
-
-                # 推送给当前用户
-                with clients_lock:
-                    if username in clients:
-                        response = {
-                            "type": "friend_update",
-                            "status": "success",
-                            "friend": friend_item  # 只推送单个好友信息
-                        }
-                        send_response(clients[username], response)
-                        logging.debug(f"推送单个好友更新给 {username}: {response}")
-
-        # 更新所有相关用户（包括自己和好友）的在线状态
-        for user in related_users:
+    """推送好友更新，只推送指定的变更好友信息"""
+    # 如果指定了 changed_friend，推送单个好友更新
+    if changed_friend:
+        friend_dict = build_friend_item(username, [changed_friend])
+        friend_item = friend_dict.get(changed_friend)
+        if friend_item:
             with clients_lock:
-                if user in clients and user != username:
-                    cursor.execute("SELECT f.friend, f.Remarks, u.avatars, u.names, u.signs "
-                                   "FROM friends f "
-                                   "LEFT JOIN users u ON f.friend = u.username "
-                                   "WHERE f.username = %s AND f.friend = %s",
-                                   (user, username))
-                    friend_row = cursor.fetchone()
-                    if friend_row:
-                        friend_username = friend_row['friend']
-                        remarks = friend_row['Remarks']
-                        avatar_id = friend_row['avatars'] if friend_row['avatars'] else ""
-                        name = friend_row['names'] if friend_row['names'] else friend_username
-                        sign = friend_row['signs'] if friend_row['signs'] else ""
-                        display_name = remarks if remarks else name
+                if username in clients:
+                    response = {
+                        "type": "friend_update",
+                        "status": "success",
+                        "friend": friend_item
+                    }
+                    send_response(clients[username], response)
+                    logging.debug(f"推送单个好友更新给 {username}: {response}")
 
-                        # 获取最后会话消息
-                        last_message_data = None
-                        with conversations_lock:
-                            sorted_key = tuple(sorted([user, friend_username]))
-                            convo_data = conversations.get(sorted_key)
-                            if convo_data:
-                                last_message = convo_data["last_message"]
-                                content = ("[文件]" if last_message["attachment_type"] == "file" else
-                                           "[图片]" if last_message["attachment_type"] == "image" else
-                                           "[视频]" if last_message["attachment_type"] == "video" else
-                                           last_message["message"])
-                                last_message_data = {
-                                    "sender": last_message["sender"],
-                                    "content": content,
-                                    "last_update_time": convo_data['last_update_time'].strftime('%Y-%m-%d %H:%M:%S')
-                                }
-
-                        friend_item = {
-                            "username": friend_username,
-                            "avatar_id": avatar_id,
-                            "name": display_name,
-                            "sign": sign,
-                            "online": friend_username in clients,
-                            "conversations": last_message_data
-                        }
-
-                        response = {
-                            "type": "friend_update",
-                            "status": "success",
-                            "friend": friend_item
-                        }
-                        send_response(clients[user], response)
-                        logging.debug(f"推送单个好友更新给相关用户 {user}: {response}")
-
-    except Exception as e:
-        logging.error(f"推送好友更新失败: {e}")
-    finally:
-        conn.close()
+    # 更新所有相关用户的在线状态
+    related_users = get_friend_usernames(username, include_self=True)
+    for user in related_users:
+        if user != username and user in clients:
+            friend_dict = build_friend_item(user, [username])
+            friend_item = friend_dict.get(username)
+            if friend_item:
+                with clients_lock:
+                    response = {
+                        "type": "friend_update",
+                        "status": "success",
+                        "friend": friend_item
+                    }
+                    send_response(clients[user], response)
+                    logging.debug(f"推送单个好友更新给相关用户 {user}: {response}")
 
 def authenticate(request: dict, client_sock: socket.socket) -> dict:
     """用户认证"""
@@ -926,10 +876,11 @@ def delete_messages(request: dict, client_sock: socket.socket) -> dict:
     finally:
         conn.close()
 
-def get_conversations(request: dict, client_sock: socket.socket) -> dict:
-    """获取用户会话列表"""
-    username = request.get("username")
-    request_id = request.get("request_id")
+
+def get_conversations(username: str) -> list:
+    """
+    获取指定用户的会话列表。
+    """
     conversations_list = []
     with conversations_lock:
         for (user1, user2), data in conversations.items():
@@ -941,9 +892,7 @@ def get_conversations(request: dict, client_sock: socket.socket) -> dict:
                     "last_update_time": data['last_update_time'].strftime('%Y-%m-%d %H:%M:%S')
                 })
     conversations_list.sort(key=lambda x: x["last_update_time"], reverse=True)
-    response = {"type": "get_conversations", "status": "success", "conversations": conversations_list, "request_id": request_id}
-    send_response(client_sock, response)
-    return response
+    return conversations_list
 
 def update_conversation_last_message(username: str, friend: str, message: dict):
     """更新会话的最后消息，不推送任何消息"""
