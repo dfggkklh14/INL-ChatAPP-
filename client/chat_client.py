@@ -208,10 +208,10 @@ class ChatClient(QObject):
                     self.friend_list_updated.emit(self.friends)
                 elif resp.get("type") == "friend_update":
                     friend = resp.get("friend", {})
-                    friend_id = friend.get("id")
+                    friend_id = friend.get("username")
                     if friend_id:
                         for i, f in enumerate(self.friends):
-                            if f.get("id") == friend_id:
+                            if f.get("username") == friend_id:
                                 self.friends[i] = friend
                                 break
                         else:
@@ -354,6 +354,62 @@ class ChatClient(QObject):
             return resp
 
         return {"status": "error", "message": "未知的子类型"}
+
+    async def parsing_new_message_or_media(self, resp: dict):
+        sender = resp.get("from", "")
+        if not sender:
+            return
+
+        for friend in self.friends:
+            if friend.get("username") == sender:
+                if resp.get("type") == "new_media":
+                    file_id = resp.get("file_id")
+                    file_type = resp.get("file_type")
+                    thumbnail_data = resp.get("thumbnail_data")
+                    save_path = os.path.join(self.thumbnail_dir, f"{file_id}")
+                    if thumbnail_data and not os.path.exists(save_path):
+                        try:
+                            thumbnail_bytes = base64.b64decode(thumbnail_data)
+                            with open(save_path, "wb") as f:
+                                f.write(thumbnail_bytes)
+                            logging.debug(f"保存缩略图: file_id={file_id}, save_path={save_path}")
+                        except Exception as e:
+                            logging.error(f"保存缩略图失败: file_id={file_id}, error={e}")
+                    resp["thumbnail_local_path"] = save_path
+                    friend["conversations"] = {
+                        "sender": resp.get("from"),
+                        "content": resp.get("conversations", f"[{resp.get('file_type', '文件')}]"),
+                        "last_update_time": resp.get("write_time", "")
+                    }
+                else:
+                    friend["conversations"] = {
+                        "sender": resp.get("from"),
+                        "content": resp.get("message", ""),
+                        "last_update_time": resp.get("write_time", "")
+                    }
+                break
+
+        should_increment_unread = True
+        if sender == self.current_friend:
+            chat_window = self._get_chat_window()
+            if chat_window and chat_window.isVisible() and not chat_window.isMinimized():
+                scroll = chat_window.chat_components.get('scroll')
+                if scroll:
+                    sb = scroll.verticalScrollBar()
+                    if sb.maximum() - sb.value() <= 5:
+                        should_increment_unread = False
+        if should_increment_unread:
+            self.unread_messages[sender] = self.unread_messages.get(sender, 0) + 1
+
+        # 发射对话更新信号
+        self.conversations_updated.emit(self.friends, [sender], [], False)
+
+        # 根据消息类型发射特定信号
+        if resp.get("type") == "new_message":
+            self.new_message_received.emit(resp)
+        elif resp.get("type") == "new_media":
+            logging.debug(f"发射新媒体信号: {resp}")
+            self.new_media_received.emit(resp)
 
     def _get_chat_window(self):
         """辅助方法：获取 ChatWindow 实例"""
