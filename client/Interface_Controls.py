@@ -81,7 +81,8 @@ LIGHT_THEME = {
     "title_bar_bg": "#f0f0f0",
     "title_bar_text": "#000000",
     "input_background": "#ffffff",
-    "dialog_text_color": "#000000"
+    "dialog_text_color": "#000000",
+    "adjuntar_text": "#808080"
 }
 
 DARK_THEME = {
@@ -106,7 +107,8 @@ DARK_THEME = {
     "title_bar_bg": "#222222",
     "title_bar_text": "#ffffff",
     "input_background": "#1b1b1b",
-    "dialog_text_color": "#ffffff"
+    "dialog_text_color": "#ffffff",
+    "adjuntar_text": "#808080"
 }
 
 
@@ -354,11 +356,19 @@ def create_themed_message_box(parent: QWidget, title: str, text: str, is_No: boo
 def create_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode) -> QLineEdit:
     le = QLineEdit(parent)
     le.setPlaceholderText(placeholder)
-    le.setFixedSize(200, 30)
+    le.setFixedHeight(30)
     le.setEchoMode(echo)
     StyleGenerator.apply_style(le, "line_edit")
     regex = QRegularExpression(r'^[a-zA-Z0-9!@#$%^&*()_+={}\[\]:;"\'<>,.?/\\|`~\-]*$')
     le.setValidator(QRegularExpressionValidator(regex, le))
+    return le
+
+def name_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode) -> QLineEdit:
+    le = QLineEdit(parent)
+    le.setPlaceholderText(placeholder)
+    le.setFixedHeight(30)
+    le.setEchoMode(echo)
+    StyleGenerator.apply_style(le, "line_edit")
     return le
 
 # 添加好友对话框

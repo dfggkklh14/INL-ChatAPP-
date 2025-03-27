@@ -27,6 +27,7 @@ from FileConfirmDialog import FileConfirmDialog
 from MessageInput import MessageInput
 from Viewer import ImageViewer
 from UserDetails import UserDetails
+from register_page import RegisterWindow
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -57,7 +58,7 @@ class LoginWindow(QDialog):
 
     def _setup_ui(self) -> None:
         self.setWindowTitle("ChatINL 登录")
-        self.setFixedSize(350, 160)
+        self.setFixedSize(280, 140)
         self.setWindowIcon(QIcon(resource_path("icon/icon.ico")))
 
         layout = QGridLayout(self)
@@ -68,11 +69,23 @@ class LoginWindow(QDialog):
         StyleGenerator.apply_style(self.login_button, "button", extra="border-radius: 4px;")
         self.login_button.clicked.connect(self.on_login)
 
+        self.register_label = QLabel("注册", self)
+        self.register_label.setAlignment(Qt.AlignCenter)
+        self.register_label.setStyleSheet("color: #808080;")
+        self.register_label.setCursor(Qt.PointingHandCursor)
+        self.register_label.enterEvent = lambda event: self.register_label.setStyleSheet(
+            "color: #4aa36c; text-decoration: underline;")
+        self.register_label.leaveEvent = lambda event: self.register_label.setStyleSheet(
+            "color: #808080; text-decoration: none;")
+        self.register_label.mousePressEvent = self.on_register
+
         layout.addWidget(self.username_input, 0, 1)
         layout.addWidget(self.password_input, 1, 1)
         layout.addWidget(self.login_button, 2, 1)
+        layout.addWidget(self.register_label, 3, 1, alignment=Qt.AlignRight)
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(2, 1)
+        layout.setRowStretch(4, 1)
         self.update_theme(theme_manager.current_theme)
 
     def on_login(self) -> None:
@@ -84,26 +97,59 @@ class LoginWindow(QDialog):
         else:
             run_async(self.async_login(username, password))
 
+    def on_register(self, event) -> None:
+        # 隐藏登录窗口
+        self.hide()
+        # 创建独立的 RegisterWindow
+        if not self.main_app.register_window or sip.isdeleted(self.main_app.register_window):
+            self.main_app.register_window = RegisterWindow(self.chat_client, parent=None)
+            self.main_app.register_window.setWindowFlags(
+                self.main_app.register_window.windowFlags() | Qt.Window
+            )
+            self.main_app.register_window.show()
+            # 连接 finished 信号到 reopen_login
+            self.main_app.register_window.finished.connect(self.reopen_login)
+        else:
+            self.main_app.register_window.show()
+            self.main_app.register_window.activateWindow()
+
     async def async_login(self, username: str, password: str) -> None:
+        if not self.chat_client.is_authenticated:
+            self.chat_client._init_connection()
         res = await self.chat_client.authenticate(username, password)
         if res == "认证成功":
             self.accept()
             await self.chat_client.start()
             if not self.main_app.chat_window:
                 self.main_app.chat_window = ChatWindow(self.chat_client, self.main_app)
-            self.chat_client.chat_window = self.main_app.chat_window  # 添加这行绑定
+            self.chat_client.chat_window = self.main_app.chat_window
             self.main_app.chat_window.show()
         else:
             QMessageBox.critical(self, "错误", res)
 
+    def reopen_login(self):
+        # 注册窗口关闭时重新显示登录窗口
+        if self.main_app.register_window and not sip.isdeleted(self.main_app.register_window):
+            self.main_app.register_window.deleteLater()
+            self.main_app.register_window = None
+        if not self.isVisible():
+            self.show()
+        self.activateWindow()
+
     def closeEvent(self, event):
-        event.accept()
+        # 仅在登录窗口可见时关闭整个程序
+        if self.isVisible():
+            event.accept()
+            self.main_app.quit_app()
+        else:
+            event.ignore()
 
     def update_theme(self, theme: dict) -> None:
         self.setStyleSheet(f"background-color: {theme['MAIN_INTERFACE']};")
         StyleGenerator.apply_style(self.username_input, "line_edit")
         StyleGenerator.apply_style(self.password_input, "line_edit")
         StyleGenerator.apply_style(self.login_button, "button", extra="border-radius: 4px;")
+        self.register_label.setStyleSheet(f"color: {theme.get('adjuntar_text', '#666666')};")
 
 class ChatWindow(QWidget):
     def __init__(self, client: ChatClient, main_app: "ChatApp") -> None:
@@ -1487,6 +1533,7 @@ class ChatApp:
         asyncio.set_event_loop(self.loop)
         self.login_window = LoginWindow(self)
         self.chat_window: Optional[ChatWindow] = None
+        self.register_window: Optional[RegisterWindow] = None  # 已存在，确保正确初始化
         theme_manager.set_mode(load_theme_mode())
         self.login_window.update_theme(theme_manager.current_theme)
 
@@ -1503,9 +1550,12 @@ class ChatApp:
 
     def on_tray_activated(self, reason: int) -> None:
         if reason == QSystemTrayIcon.Trigger:
-            window = self.chat_window or self.login_window
-            window.show()
-            window.activateWindow()
+            # 优先显示活动窗口：ChatWindow > RegisterWindow > LoginWindow
+            window = self.chat_window or self.register_window or self.login_window
+            if window and not window.isVisible():
+                window.show()
+            if window:
+                window.activateWindow()
 
     def on_notification_clicked(self) -> None:
         if self.chat_window:
@@ -1527,9 +1577,12 @@ class ChatApp:
                     except Exception as e:
                         logging.error(f"等待任务取消失败: {e}")
 
-                if self.chat_window:
+                # 确保所有窗口关闭
+                if self.chat_window and not sip.isdeleted(self.chat_window):
                     self.chat_window.close()
-                if self.login_window:
+                if self.register_window and not sip.isdeleted(self.register_window):
+                    self.register_window.close()
+                if self.login_window and not sip.isdeleted(self.login_window):
                     self.login_window.close()
 
                 self.tray_icon.hide()

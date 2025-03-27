@@ -46,7 +46,7 @@ class ChatClient(QObject):
     new_media_received = pyqtSignal(dict)            # 新媒体接收
     remarks_updated = pyqtSignal(dict)               # 备注更新
 
-    def __init__(self, host='26.102.137.22', port=13746):
+    def __init__(self, host='26.102.137.22', port=13235):
         super().__init__()
         self.config = {
             'host': host,
@@ -56,6 +56,9 @@ class ChatClient(QObject):
         }
         self.is_running = True
         self.reader_task = None
+        self.register_task = None  # 用于注册监听
+        self.register_active = False  # 标记注册监听状态
+        self.register_requests = {}  # 存储注册请求的 Future
         self.lock = asyncio.Lock()
         self.friends = []
         self.unread_messages = {}
@@ -68,7 +71,13 @@ class ChatClient(QObject):
         self._init_connection()
 
     async def start(self):
-        """直接启动读取任务"""
+        if self.register_active and self.register_task:
+            self.register_active = False
+            self.register_task.cancel()
+            try:
+                await self.register_task
+            except asyncio.CancelledError:
+                logging.info("注册监听任务已清理，为启动主监听做准备")
         self.reader_task = asyncio.create_task(self.start_reader())
 
     def _init_connection(self):
@@ -81,13 +90,17 @@ class ChatClient(QObject):
         self._connect()
 
     def _connect(self):
-        for _ in range(self.config['retries']):
+        for attempt in range(self.config['retries']):
             try:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.client_socket.connect((self.config['host'], self.config['port']))
+                logging.info("连接服务器成功")
                 return
             except socket.error as e:
-                time.sleep(self.config['delay'])
+                logging.warning(f"连接尝试 {attempt + 1}/{self.config['retries']} 失败: {e}")
+                if attempt < self.config['retries'] - 1:
+                    time.sleep(self.config['delay'])
+        raise ConnectionError("无法连接到服务器")
 
     def _pack_message(self, data: bytes) -> bytes:
         return len(data).to_bytes(4, 'big') + data
@@ -110,6 +123,7 @@ class ChatClient(QObject):
                 raise Exception("响应头不完整")
             length = int.from_bytes(header, 'big')
             encrypted_response = self._recv_all(length)
+            print(self._decrypt(encrypted_response))
             return self._decrypt(encrypted_response)
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -121,6 +135,7 @@ class ChatClient(QObject):
             if not chunk:
                 raise Exception("接收数据异常")
             data += chunk
+            print(data)
         return data
 
     async def _recv_async(self, size: int) -> bytes:
@@ -130,6 +145,7 @@ class ChatClient(QObject):
             if not chunk:
                 raise ConnectionError("连接断开")
             data += chunk
+            print(data)
         return data
 
     async def authenticate(self, username: str, password: str) -> str:
@@ -162,12 +178,6 @@ class ChatClient(QObject):
             self.friend_list_updated.emit(self.friends)
         return resp
 
-    def get_friend_remarks(self, friend_username: str) -> str:
-        for friend in self.friends:
-            if friend.get("username") == friend_username:
-                return friend.get("name", friend_username)
-        return friend_username
-
     async def start_reader(self):
         while self.is_running:
             try:
@@ -178,100 +188,183 @@ class ChatClient(QObject):
                 length = int.from_bytes(header, 'big')
                 encrypted_payload = await self._recv_async(length)
                 resp = self._decrypt(encrypted_payload)
+
+                # 未登录状态下的消息过滤
+                if not self.is_authenticated and resp.get("type") not in ["user_register", "exit"]:
+                    logging.warning(f"未登录状态下收到意外消息: {resp}")
+                    continue  # 丢弃非注册或退出相关的消息
+
+                # 处理退出消息
                 if resp.get("type") == "exit":
                     self.is_running = False
                     req_id = resp.get("request_id")
                     if req_id in self.pending_requests:
                         self.pending_requests.pop(req_id).set_result(resp)
                     break
+
+                # 处理请求响应
                 req_id = resp.get("request_id")
                 if req_id in self.pending_requests:
                     self.pending_requests.pop(req_id).set_result(resp)
+                # 处理推送消息（仅在登录后有效）
                 elif resp.get("type") in ["new_message", "new_media"]:
                     await self.parsing_new_message_or_media(resp)
                 elif resp.get("type") == "friend_list_update":
                     self.friends = resp.get("friends", [])
                     self.friend_list_updated.emit(self.friends)
                 elif resp.get("type") == "friend_update":
-                    friend_data = resp.get("friend", {})
-                    if friend_data:
-                        friend_username = friend_data.get("username")
-                        # 更新内存中的好友列表
+                    friend = resp.get("friend", {})
+                    friend_id = friend.get("id")
+                    if friend_id:
                         for i, f in enumerate(self.friends):
-                            if f.get("username") == friend_username:
-                                self.friends[i] = friend_data
+                            if f.get("id") == friend_id:
+                                self.friends[i] = friend
                                 break
                         else:
-                            self.friends.append(friend_data)
-                        # 直接用 conversations_updated 信号，传入 affected_users
-                        self.conversations_updated.emit(self.friends, [friend_username], [], False)
-                        logging.debug(f"处理 friend_update，更新好友 {friend_username}")
+                            self.friends.append(friend)
+                        self.friend_list_updated.emit(self.friends)
                 elif resp.get("type") == "deleted_messages":
                     await self.parsing_delete_message(resp)
                 elif resp.get("type") == "Update_Remarks":
                     self.remarks_updated.emit(resp)
+
             except Exception as e:
                 logging.error(f"读取推送消息失败: {e}")
                 if not self.is_running:
                     break
                 await asyncio.sleep(1)
-        logging.info("start_reader 已退出循环")
 
-    async def parsing_new_message_or_media(self, resp: dict):
-        sender = resp.get("from", "")
-        if not sender:
-            return
+    async def register_reader(self):
+        self.register_active = True
+        try:
+            while self.register_active:
+                header = await self._recv_async(4)
+                if len(header) < 4:
+                    logging.warning("注册监听：接收到的头部数据不完整，继续等待")
+                    continue
+                length = int.from_bytes(header, 'big')
+                encrypted_payload = await self._recv_async(length)
+                resp = self._decrypt(encrypted_payload)
 
-        for friend in self.friends:
-            if friend.get("username") == sender:
-                if resp.get("type") == "new_media":
-                    file_id = resp.get("file_id")
-                    file_type = resp.get("file_type")
-                    thumbnail_data = resp.get("thumbnail_data")
-                    save_path = os.path.join(self.thumbnail_dir, f"{file_id}")
-                    if thumbnail_data and not os.path.exists(save_path):
-                        try:
-                            thumbnail_bytes = base64.b64decode(thumbnail_data)
-                            with open(save_path, "wb") as f:
-                                f.write(thumbnail_bytes)
-                            logging.debug(f"保存缩略图: file_id={file_id}, save_path={save_path}")
-                        except Exception as e:
-                            logging.error(f"保存缩略图失败: file_id={file_id}, error={e}")
-                    resp["thumbnail_local_path"] = save_path
-                    friend["conversations"] = {
-                        "sender": resp.get("from"),
-                        "content": resp.get("conversations", f"[{resp.get('file_type', '文件')}]"),
-                        "last_update_time": resp.get("write_time", "")
-                    }
+                if resp.get("type") == "user_register":
+                    req_id = resp.get("request_id")
+                    if req_id in self.register_requests:
+                        self.register_requests.pop(req_id).set_result(resp)
                 else:
-                    friend["conversations"] = {
-                        "sender": resp.get("from"),
-                        "content": resp.get("message", ""),
-                        "last_update_time": resp.get("write_time", "")
-                    }
-                break
+                    logging.warning(f"注册监听：收到无关消息，丢弃: {resp}")
+        except Exception as e:
+            logging.error(f"注册监听失败: {e}")
+            for fut in self.register_requests.values():
+                if not fut.done():
+                    fut.set_exception(e)
+        finally:
+            self.register_active = False
+            self.register_task = None
+            logging.info("注册监听已终止")
 
-        should_increment_unread = True
-        if sender == self.current_friend:
-            chat_window = self._get_chat_window()
-            if chat_window and chat_window.isVisible() and not chat_window.isMinimized():
-                scroll = chat_window.chat_components.get('scroll')
-                if scroll:
-                    sb = scroll.verticalScrollBar()
-                    if sb.maximum() - sb.value() <= 5:
-                        should_increment_unread = False
-        if should_increment_unread:
-            self.unread_messages[sender] = self.unread_messages.get(sender, 0) + 1
+    # 修改后的 register 方法
+    async def register(self, subtype: str, session_id: str = None, captcha_input: str = None,
+                       password: str = None, avatar: QPixmap = None, nickname: str = None, sign: str = None) -> dict:
+        """处理用户注册请求"""
+        req = {
+            "type": "user_register",
+            "subtype": subtype,
+            "request_id": str(uuid.uuid4())
+        }
 
-        # 发射对话更新信号
-        self.conversations_updated.emit(self.friends, [sender], [], False)
+        if session_id:
+            req["session_id"] = session_id
 
-        # 根据消息类型发射特定信号
-        if resp.get("type") == "new_message":
-            self.new_message_received.emit(resp)
-        elif resp.get("type") == "new_media":
-            logging.debug(f"发射新媒体信号: {resp}")
-            self.new_media_received.emit(resp)
+        # 如果 register_reader 未启动，则启动它
+        if not self.register_active:
+            self.register_task = asyncio.create_task(self.register_reader())
+
+        # 发送请求
+        async with self.send_lock:
+            ciphertext = self._encrypt(req)
+            msg = self._pack_message(ciphertext)
+            self.client_socket.send(msg)
+
+        # 创建并等待 Future
+        fut = asyncio.get_event_loop().create_future()
+        self.register_requests[req["request_id"]] = fut
+        resp = await fut
+
+        # 处理响应
+        if subtype == "register_1":
+            # 第一步：获取用户名和验证码
+            print(f"收到的register_1:{resp}")
+            if resp.get("status") == "success":
+                return {
+                    "status": "success",
+                    "username": resp.get("username"),
+                    "captcha_image": resp.get("captcha_image"),  # base64 编码的图片
+                    "session_id": resp.get("session_id")
+                }
+            return resp
+
+        elif subtype == "register_2":
+            if not captcha_input:
+                return {"status": "error", "message": "请输入验证码"}
+            req["captcha_input"] = captcha_input  # 确保这一行执行
+            async with self.send_lock:
+                print(f"发送 register_2 请求: {req}")  # 添加调试日志
+                ciphertext = self._encrypt(req)
+                msg = self._pack_message(ciphertext)
+                self.client_socket.send(msg)
+            fut = asyncio.get_event_loop().create_future()
+            self.register_requests[req["request_id"]] = fut
+            return await fut
+
+
+        elif subtype == "register_3":
+            # 第三步：提交注册信息
+            if not password:
+                return {"status": "error", "message": "密码不能为空"}
+            req["password"] = password
+            if avatar:
+                buffer = QBuffer()
+                buffer.open(QBuffer.WriteOnly)
+                avatar.save(buffer, "JPEG")
+                file_data = buffer.data()
+                buffer.close()
+                req["avatar_data"] = base64.b64encode(file_data).decode('utf-8')
+            req["nickname"] = nickname or ""
+            req["sign"] = sign or ""
+            async with self.send_lock:
+                ciphertext = self._encrypt(req)
+                msg = self._pack_message(ciphertext)
+                self.client_socket.send(msg)
+            fut = asyncio.get_event_loop().create_future()
+            self.register_requests[req["request_id"]] = fut
+            resp = await fut
+            # 注册完成，关闭注册监听
+            if resp.get("status") == "success":
+                self.register_active = False
+                if self.register_task:
+                    self.register_task.cancel()
+            return resp
+
+        elif subtype == "register_4":
+            # 第四步：刷新验证码
+            if not session_id:
+                return {"status": "error", "message": "会话ID缺失"}
+            async with self.send_lock:
+                ciphertext = self._encrypt(req)
+                msg = self._pack_message(ciphertext)
+                self.client_socket.send(msg)
+            fut = asyncio.get_event_loop().create_future()
+            self.register_requests[req["request_id"]] = fut
+            resp = await fut
+            if resp.get("status") == "success":
+                return {
+                    "status": "success",
+                    "captcha_image": resp.get("captcha_image"),
+                    "session_id": resp.get("session_id")
+                }
+            return resp
+
+        return {"status": "error", "message": "未知的子类型"}
 
     def _get_chat_window(self):
         """辅助方法：获取 ChatWindow 实例"""

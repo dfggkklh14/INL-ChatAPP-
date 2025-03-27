@@ -3,7 +3,7 @@ import mysql.connector
 from moviepy import VideoFileClip
 from mysql.connector import Error, MySQLConnection
 import socket
-from threading import Lock, Timer, Thread
+from threading import Lock,Thread
 import json
 from datetime import datetime
 import logging
@@ -16,13 +16,15 @@ from cryptography.fernet import Fernet
 from mysql.connector.abstracts import MySQLConnectionAbstract
 from mysql.connector.pooling import PooledMySQLConnection
 
+from Server.register import user_register
+
 # 配置日志记录，支持中文调试信息
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
 
 # 服务器配置
 SERVER_CONFIG = {
     'HOST': '26.102.137.22',  # 服务器地址
-    'PORT': 13746,            # 服务器端口
+    'PORT': 13235,            # 服务器端口
     'DB_CONFIG': {            # MySQL 数据库配置
         'host': 'localhost',  # 数据库主机地址
         'user': 'root',  # 数据库用户名
@@ -206,6 +208,7 @@ def send_response(client_sock: socket.socket, response: dict):
         logging.info("响应发送成功")
     except Exception as e:
         logging.error(f"发送响应失败: {e}")
+        raise  # 抛出异常以便上层处理
 
 
 def update_user_profile(request: dict, client_sock: socket.socket) -> dict:
@@ -1000,18 +1003,25 @@ def add_friend(request: dict, client_sock: socket.socket) -> dict:
     return response
 
 def handle_client(client_sock: socket.socket, client_addr):
-    """处理客户端连接"""
+    """处理客户端连接，确保只有认证通过的用户可以发送其他请求"""
     logging.info(f"客户端 {client_addr} 已连接")
-    logged_in_user = None
+    logged_in_user = None  # 用于跟踪当前登录用户
     try:
         while True:
+            # 接收消息长度头部
             header = recv_all(client_sock, 4)
             if not header:
+                logging.info(f"客户端 {client_addr} 断开连接（未收到头部）")
                 break
             msg_length = int.from_bytes(header, 'big')
+
+            # 接收加密数据
             encrypted_data = recv_all(client_sock, msg_length)
             if not encrypted_data:
+                logging.info(f"客户端 {client_addr} 断开连接（未收到数据）")
                 break
+
+            # 解密并解析请求
             try:
                 decrypted_data = fernet.decrypt(encrypted_data)
                 request = json.loads(decrypted_data.decode('utf-8'))
@@ -1022,15 +1032,34 @@ def handle_client(client_sock: socket.socket, client_addr):
                 continue
 
             req_type = request.get("type")
+
+            # 处理未登录时允许的请求：认证和注册
             if req_type == "authenticate":
                 response = authenticate(request, client_sock)
                 send_response(client_sock, response)
                 if response.get("status") == "success":
                     logged_in_user = request.get("username")
-                    push_friends_list(logged_in_user)
-                    push_friends_update(logged_in_user)
+                    push_friends_list(logged_in_user)  # 推送好友列表
+                    push_friends_update(logged_in_user)  # 更新好友状态
                 continue
-            elif req_type == "send_message":
+            elif req_type == "user_register":
+                response = user_register(request, client_sock)  # 调用 register.py 中的注册功能
+                send_response(client_sock, response)
+                continue
+
+            # 未登录时拒绝其他请求
+            if not logged_in_user:
+                send_response(client_sock, {
+                    "type": req_type,
+                    "status": "error",
+                    "message": "请先登录",
+                    "request_id": request.get("request_id")
+                })
+                logging.warning(f"未登录客户端 {client_addr} 尝试发送请求: {req_type}")
+                continue
+
+            # 已登录时处理其他请求
+            if req_type == "send_message":
                 response = send_message(request, client_sock)
             elif req_type == "get_user_info":
                 response = get_user_info(request, client_sock)
@@ -1040,10 +1069,10 @@ def handle_client(client_sock: socket.socket, client_addr):
                 response = update_user_profile(request, client_sock)
             elif req_type == "download_media":
                 download_media(request, client_sock)
-                continue
+                continue  # download_media 内部已发送响应
             elif req_type == "get_chat_history_paginated":
                 get_chat_history_paginated(request, client_sock)
-                continue
+                continue  # get_chat_history_paginated 内部已发送响应
             elif req_type == "add_friend":
                 response = add_friend(request, client_sock)
             elif req_type == "Update_Remarks":
@@ -1051,31 +1080,53 @@ def handle_client(client_sock: socket.socket, client_addr):
             elif req_type == "delete_messages":
                 response = delete_messages(request, client_sock)
             elif req_type == "exit":
-                response = {"type": "exit", "status": "success", "message": f"{request.get('username')} 已退出", "request_id": request.get("request_id")}
+                response = {
+                    "type": "exit",
+                    "status": "success",
+                    "message": f"{logged_in_user} 已退出",
+                    "request_id": request.get("request_id")
+                }
                 send_response(client_sock, response)
-                logging.info(f"客户端 {client_addr} 请求退出")
+                logging.info(f"用户 {logged_in_user} 请求退出")
                 break
             else:
-                response = {"status": "error", "message": "未知的请求类型", "request_id": request.get("request_id")}
+                response = {
+                    "type": req_type,
+                    "status": "error",
+                    "message": "未知的请求类型",
+                    "request_id": request.get("request_id")
+                }
+
+            # 发送响应（如果有）
             if response:
                 send_response(client_sock, response)
+
     except ConnectionResetError:
         logging.warning(f"客户端 {client_addr} 强制断开连接")
     except Exception as e:
         logging.error(f"处理客户端请求时出现异常：{e}")
+        if logged_in_user:
+            with clients_lock:
+                if logged_in_user in clients and clients[logged_in_user] == client_sock:
+                    del clients[logged_in_user]
+                    push_friends_update(logged_in_user)
+        client_sock.close()
     finally:
+        # 清理登录用户状态
         if logged_in_user:
             with clients_lock:
                 if logged_in_user in clients and clients[logged_in_user] == client_sock:
                     del clients[logged_in_user]
                     logging.info(f"用户 {logged_in_user} 已退出")
-            push_friends_update(logged_in_user)
+            push_friends_update(logged_in_user)  # 更新好友在线状态
         else:
+            # 未登录用户断开时检查是否有匹配的 socket
             with clients_lock:
                 for user, sock in list(clients.items()):
                     if sock == client_sock:
                         del clients[user]
                         logging.info(f"用户 {user} 已退出")
+                        push_friends_update(user)
                         break
         client_sock.close()
         logging.info(f"关闭连接：{client_addr}")
