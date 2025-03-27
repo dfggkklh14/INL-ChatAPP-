@@ -408,8 +408,6 @@ class ChatWindow(QWidget):
         for rowid, bubble in list(self.active_bubbles.items()):
             if bubble.file_id in file_ids:
                 del self.active_bubbles[rowid]
-
-        # 更新 ImageViewer
         if self.image_viewer and not sip.isdeleted(self.image_viewer) and self.image_viewer.isVisible():
             if not self.image_list:
                 self.image_viewer.hide_viewer()  # 如果 image_list 为空，关闭查看器
@@ -657,7 +655,6 @@ class ChatWindow(QWidget):
                 self.resize(self.width() - 330, self.height())
             self.chat_components['right_panel'].setFixedWidth(0)
 
-        # 清理 ImageViewer
         if self.image_viewer and not sip.isdeleted(self.image_viewer):
             theme_manager.unregister(self.image_viewer)
             self.image_viewer.hide_viewer()
@@ -724,12 +721,6 @@ class ChatWindow(QWidget):
         area_layout.setRowStretch(2, 0)
 
         self.content_layout.addWidget(self.chat_components['area_widget'], 0, 0, 1, 2)
-
-        if not self.image_viewer or sip.isdeleted(self.image_viewer):
-            self.image_viewer = ImageViewer(self.chat_components['area_widget'])
-            self.image_viewer.hide()
-            theme_manager.register(self.image_viewer)
-
         self.update_theme(theme_manager.current_theme)
 
     def _create_scroll_button(self, theme: dict) -> None:
@@ -747,9 +738,7 @@ class ChatWindow(QWidget):
         if not self.image_viewer or not self.chat_components.get('area_widget'):
             return
         current_index = next((i for i, (fid, _) in enumerate(self.image_list) if fid == file_id), 0)
-        self.image_viewer.set_image_list(self.image_list, current_index)
-        area_widget = self.chat_components['area_widget']
-        self.image_viewer.setGeometry(area_widget.geometry())
+        self.image_viewer.set_image_list(image_list=self.image_list, start_index=current_index, parent=self.chat_components.get('area_widget'))
         self.image_viewer.show()
         self.image_viewer.raise_()
 
@@ -758,11 +747,10 @@ class ChatWindow(QWidget):
         self.setup_chat_area()
         self.current_page = 1
         self.has_more_history = True
-        # 重置并重新创建 ImageViewer
         if self.image_viewer and not sip.isdeleted(self.image_viewer):
             theme_manager.unregister(self.image_viewer)
             self.image_viewer.deleteLater()
-        self.image_viewer = ImageViewer(self.chat_components['area_widget'])
+        self.image_viewer = ImageViewer(parent=self.chat_components['area_widget'])  # 传入父级窗口
         self.image_viewer.hide()
         theme_manager.register(self.image_viewer)
         self.image_list.clear()

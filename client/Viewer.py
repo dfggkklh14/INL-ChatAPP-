@@ -1,19 +1,15 @@
-import asyncio
-import os
-from typing import Optional
-
 from PyQt5 import sip
 from PyQt5.QtCore import QPoint, Qt, QRect, QTimer
 from PyQt5.QtGui import QPainter, QColor, QPixmap, QRadialGradient, QPainterPath, QPen
-from PyQt5.QtWidgets import QLabel, QWidget, QSizePolicy, QVBoxLayout, QPushButton, QFileDialog, QApplication, \
-    QMessageBox, QMenu
+from PyQt5.QtWidgets import QDialog, QSizePolicy, QVBoxLayout, QPushButton, QFileDialog, QApplication, QMessageBox, \
+    QMenu, QLabel
 
 from Interface_Controls import StyleGenerator, FloatingLabel
+import asyncio
+import os
 
-LOADING_TEXT = '<span style="color: white; font-family: Microsoft YaHei; font-size: 10pt;">加载中...</span>'
 
-
-class DraggableLabel(QLabel):
+class DraggableLabel(QLabel):  # DraggableLabel 不变，保持原样
     def __init__(self, parent=None):
         super().__init__(parent)
         self.offset = QPoint(0, 0)
@@ -23,7 +19,6 @@ class DraggableLabel(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background-color: transparent;")
 
-        # 加载动画相关属性
         self.loading_angle = 0
         self.loading_timer = QTimer(self)
         self.loading_timer.timeout.connect(self.update_loading_animation)
@@ -34,25 +29,21 @@ class DraggableLabel(QLabel):
         self.update()
 
     def start_loading_animation(self):
-        """启动加载动画"""
         self.is_loading = True
-        self.loading_timer.start(30)  # 每30毫秒更新一次动画
+        self.loading_timer.start(30)
 
     def stop_loading_animation(self):
-        """停止加载动画"""
         self.is_loading = False
         self.loading_timer.stop()
         self.update()
 
     def update_loading_animation(self):
-        """更新加载动画的角度"""
-        self.loading_angle = (self.loading_angle + 12) % 360  # 每次旋转12度
+        self.loading_angle = (self.loading_angle + 12) % 360
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)  # 抗锯齿
-
+        painter.setRenderHint(QPainter.Antialiasing)
         if not self._pixmap.isNull():
             viewport_center = self.rect().center()
             pixmap_center = self._pixmap.rect().center()
@@ -60,32 +51,24 @@ class DraggableLabel(QLabel):
             y = viewport_center.y() - pixmap_center.y() + self.offset.y()
             painter.drawPixmap(x, y, self._pixmap)
         elif self.is_loading:
-            # 绘制带连贯拖尾的旋转动画
             center = self.rect().center()
-            radius = 20  # 旋转半径
-            dot_size = 4  # 主圆点大小
-            tail_length = 180  # 拖尾角度长度（180度）
-
+            radius = 20
+            dot_size = 4
+            tail_length = 180
             import math
-            head_angle = self.loading_angle  # 主圆点角度
-
-            # 计算主圆点位置
+            head_angle = self.loading_angle
             head_x = center.x() + radius * math.cos(math.radians(head_angle))
             head_y = center.y() + radius * math.sin(math.radians(head_angle))
-
-            # 绘制拖尾：使用更少的点提高性能，同时增强透明效果
-            tail_segments = 15  # 减少分段数以优化性能
+            tail_segments = 15
             for i in range(tail_segments):
                 angle = (head_angle - i * (tail_length / tail_segments)) % 360
                 x = center.x() + radius * math.cos(math.radians(angle))
                 y = center.y() + radius * math.sin(math.radians(angle))
-                alpha = int(220 * (1 - (i / tail_segments) ** 3))  # 三次方衰减，尾部更透明
-                width = dot_size * (1 - (i / tail_segments) * 0.8)  # 宽度衰减稍慢
-                painter.setBrush(QColor(255, 255, 255, max(0, alpha - 20)))  # 降低整体透明度
+                alpha = int(220 * (1 - (i / tail_segments) ** 3))
+                width = dot_size * (1 - (i / tail_segments) * 0.8)
+                painter.setBrush(QColor(255, 255, 255, max(0, alpha - 20)))
                 painter.setPen(Qt.NoPen)
                 painter.drawEllipse(int(x - width / 2), int(y - width / 2), int(width), int(width))
-
-            # 绘制主圆点（头部）
             painter.setBrush(QColor(255, 255, 255, 220))
             painter.drawEllipse(int(head_x - dot_size / 2), int(head_y - dot_size / 2), dot_size, dot_size)
         else:
@@ -120,19 +103,16 @@ class DraggableLabel(QLabel):
         viewport = self.rect()
         pixmap_width = self._pixmap.width()
         pixmap_height = self._pixmap.height()
-
         if pixmap_width <= viewport.width():
             offset.setX(0)
         else:
             max_x = (pixmap_width - viewport.width()) // 2
             offset.setX(max(-max_x, min(max_x, offset.x())))
-
         if pixmap_height <= viewport.height():
             offset.setY(0)
         else:
             max_y = (pixmap_height - viewport.height()) // 2
             offset.setY(max(-max_y, min(max_y, offset.y())))
-
         return offset
 
     def resetOffset(self):
@@ -140,11 +120,11 @@ class DraggableLabel(QLabel):
         self.update()
 
 
-class ImageViewer(QWidget):
-    def __init__(self, parent: Optional[QWidget] = None):
+class ImageViewer(QDialog):
+    def __init__(self, image_list=None, start_index=0, parent=None):
         super().__init__(parent)
-        self.image_list = []
-        self.current_index = -1
+        self.image_list = image_list if image_list is not None else []
+        self.current_index = start_index if 0 <= start_index < len(self.image_list) else 0
         self.original_pixmap = QPixmap()
         self.scale_factor = 1.0
         self.loading = False
@@ -155,6 +135,15 @@ class ImageViewer(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
+        self.setModal(False)
+
+        # 设置窗口属性以支持透明背景
+        self.setAttribute(Qt.WA_TranslucentBackground)  # 允许透明背景
+        self.setWindowFlags(self.windowFlags() & ~Qt.Window)  # 移除顶级窗口标志
+
+        # 初始化时同步父级几何位置
+        if self.parent():
+            self.setGeometry(self.parent().geometry())
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -178,14 +167,20 @@ class ImageViewer(QWidget):
         self.close_button.clicked.connect(self.hide_viewer)
 
         self.setLayout(layout)
+        self.update_buttons()
+        if self.image_list:
+            asyncio.create_task(self.load_image())
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
         super().paintEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self.parent():
+            self.move(self.parent().pos())
         button_y = (self.height() - 50) // 2
         self.prev_button.move(10, button_y)
         self.next_button.move(self.width() - 60, button_y)
@@ -229,7 +224,7 @@ class ImageViewer(QWidget):
             orig_height = self.original_pixmap.height()
             longest_side = max(orig_width, orig_height)
             min_scale = (viewport.width() / orig_width if longest_side == orig_width
-                        else viewport.height() / orig_height)
+                         else viewport.height() / orig_height)
 
             delta = event.angleDelta().y()
             if delta > 0:
@@ -250,14 +245,16 @@ class ImageViewer(QWidget):
             event.accept()
 
     def set_image_list(self, image_list, start_index):
-        self.image_list = image_list
-        self.current_index = start_index
+        self.image_list = image_list if image_list is not None else []
+        self.current_index = start_index if 0 <= start_index < len(self.image_list) else 0
         self.scale_factor = 1.0
         self.update_buttons()
         self.original_pixmap = QPixmap()
         self.image_label.setPixmap(QPixmap())
         self.image_label.resetOffset()
-        self.image_label.start_loading_animation()  # 启动加载动画
+        self.image_label.start_loading_animation()
+        if self.parent():
+            self.setGeometry(self.parent().geometry())
         asyncio.create_task(self.load_image())
 
     async def load_image(self):
@@ -268,7 +265,13 @@ class ImageViewer(QWidget):
         self.original_pixmap = QPixmap()
         self.image_label.setPixmap(QPixmap())
         file_id, original_file_name = self.image_list[self.current_index]
-        client = self.window().client
+        client = self.parent().window().client if self.parent() else None
+        if not client:
+            self.image_label.setText("无法加载图片：客户端不可用")
+            self.image_label.stop_loading_animation()
+            self.loading = False
+            return
+
         image_dir = os.path.join(client.cache_root, "images")
         os.makedirs(image_dir, exist_ok=True)
         save_path = os.path.join(image_dir, original_file_name or file_id)
@@ -298,7 +301,7 @@ class ImageViewer(QWidget):
             self.original_pixmap = QPixmap()
         finally:
             self.loading = False
-            self.image_label.stop_loading_animation()  # 停止加载动画
+            self.image_label.stop_loading_animation()
 
     def show_prev_image(self):
         if self.current_index < len(self.image_list) - 1 and not self.loading:
@@ -306,9 +309,9 @@ class ImageViewer(QWidget):
             self.scale_factor = 1.0
             self.update_buttons()
             self.original_pixmap = QPixmap()
-            self.image_label.setPixmap(QPixmap())  # 清空当前图片
+            self.image_label.setPixmap(QPixmap())
             self.image_label.resetOffset()
-            self.image_label.start_loading_animation()  # 启动加载动画
+            self.image_label.start_loading_animation()
             asyncio.create_task(self.load_image())
 
     def show_next_image(self):
@@ -317,9 +320,9 @@ class ImageViewer(QWidget):
             self.scale_factor = 1.0
             self.update_buttons()
             self.original_pixmap = QPixmap()
-            self.image_label.setPixmap(QPixmap())  # 清空当前图片
+            self.image_label.setPixmap(QPixmap())
             self.image_label.resetOffset()
-            self.image_label.start_loading_animation()  # 启动加载动画
+            self.image_label.start_loading_animation()
             asyncio.create_task(self.load_image())
 
     def update_buttons(self):
@@ -349,6 +352,8 @@ class ImageViewer(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if self.parent():
+            self.setGeometry(self.parent().geometry())
         self.setFocus()
         self.update_image()
 

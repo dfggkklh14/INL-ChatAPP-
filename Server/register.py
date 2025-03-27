@@ -43,11 +43,31 @@ def get_db_connection():
 
 
 def generate_username():
-    """生成8-10位随机数字的用户名，且首位不为0"""
-    length = random.randint(8, 10)
-    first_digit = random.choice("123456789")  # 首位不能是0
-    other_digits = ''.join(random.choices("0123456789", k=length - 1))
-    return first_digit + other_digits
+    """生成8-10位随机数字的用户名，且首位不为0，并确保数据库中不存在"""
+    conn = get_db_connection()
+    if not conn:
+        logging.error("无法连接数据库，无法生成用户名")
+        return None  # 或抛出异常，根据需求调整
+
+    try:
+        cursor = conn.cursor()
+        while True:
+            length = random.randint(8, 10)
+            first_digit = random.choice("123456789")  # 首位不能是0
+            other_digits = ''.join(random.choices("0123456789", k=length - 1))
+            username = first_digit + other_digits
+
+            # 检查数据库中是否已存在该 username
+            cursor.execute("SELECT username FROM users WHERE username = %s", (username,))
+            if not cursor.fetchone():  # 如果没有找到重复的 username
+                return username  # 返回这个唯一的 username
+            # 如果存在重复，继续循环生成新的 username
+            logging.debug(f"用户名 {username} 已存在，重新生成")
+    except Error as e:
+        logging.error(f"数据库查询失败: {e}")
+        return None  # 或抛出异常，根据需求调整
+    finally:
+        conn.close()
 
 
 def generate_captcha_image():
@@ -77,19 +97,9 @@ def user_register(request: dict, client_sock: socket.socket) -> dict:
     if subtype == "register_1":
         # 第一次请求：生成用户名和验证码
         username = generate_username()
-        while True:  # 确保用户名唯一
-            conn = get_db_connection()
-            if not conn:
-                return {"type": "user_register", "subtype": subtype, "status": "error",
-                        "message": "数据库连接失败", "request_id": request_id}
-            try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT username FROM users WHERE username = %s", (username,))
-                if not cursor.fetchone():
-                    break
-                username = generate_username()
-            finally:
-                conn.close()
+        if not username:
+            return {"type": "user_register", "subtype": subtype, "status": "error",
+                    "message": "生成用户名失败", "request_id": request_id}
 
         captcha_text, captcha_img = generate_captcha_image()
         with captcha_lock:
