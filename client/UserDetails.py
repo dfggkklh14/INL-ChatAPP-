@@ -489,19 +489,23 @@ class UserDetails(QWidget):
         """
         动态调整编辑器宽度和字体大小：
         - 根据编辑区域（名字或签名）设置不同的可用宽度和默认字体大小
-        - 如果文本内容较长导致宽度超过可用范围，则逐步降低字体大小，直到适合
-        - 计算得到的宽度在自然宽度基础上增加15%
+        - 考虑按钮的空间，确保输入框不会与按钮重叠
+        - 对于名字输入框，当宽度达到118时开始减小字体
+        - 对于签名输入框，当宽度超过可用范围时减小字体
         """
+        # 按钮宽度（20 + 20） + 间距（5 * 2）
+        button_space = 50
+
         if key == "sign":
-            available_width = self.container2.width() - 30
+            available_width = self.container2.width() - 30 - button_space
             default_font_size = 10
             font_weight = QFont.Normal
         elif key == "name":
-            available_width = self.container1.width() - 50
+            available_width = self.container1.width() - 50 - button_space
             default_font_size = 14
             font_weight = QFont.Bold
         else:
-            available_width = editor.width()
+            available_width = editor.width() - button_space
             default_font_size = 10
             font_weight = QFont.Normal
 
@@ -518,22 +522,28 @@ class UserDetails(QWidget):
         # 初始化字体和测量工具
         font = QFont("微软雅黑", default_font_size, font_weight)
         fm = QFontMetrics(font)
-        # 计算自然宽度，加上内边距（10像素）
         natural_width = fm.boundingRect(text).width() + 10
         new_font_size = default_font_size
 
-        # 当自然宽度*1.15超过可用宽度时，逐步降低字体大小
-        while natural_width * 3.15 > available_width and new_font_size > min_font_size:
-            new_font_size -= 1
-            font.setPointSize(new_font_size)
-            fm = QFontMetrics(font)
-            natural_width = fm.boundingRect(text).width() + 10
+        if key == "name" and natural_width >= 140:
+            while natural_width >= 140 and new_font_size > min_font_size:
+                new_font_size -= 1
+                font.setPointSize(new_font_size)
+                fm = QFontMetrics(font)
+                natural_width = fm.boundingRect(text).width() + 20
 
-        # 应用新的字体
+        # 处理签名输入框：宽度超限时减小字体
+        elif key == "sign" and natural_width > available_width and new_font_size > min_font_size:
+            while natural_width > available_width and new_font_size > min_font_size:
+                new_font_size -= 1
+                font.setPointSize(new_font_size)
+                fm = QFontMetrics(font)
+                natural_width = fm.boundingRect(text).width() + 10
+
+        # 应用字体
         editor.setFont(font)
-        # 目标宽度在自然宽度上增加15%
-        desired_width = int(natural_width * 1.15)
-        new_width = max(50, min(desired_width, available_width))
+        # 设置宽度，确保不与按钮重叠
+        new_width = max(50, min(natural_width, available_width))
         editor.setFixedWidth(new_width)
         if isinstance(editor, QTextEdit):
             editor.document().setTextWidth(new_width)
@@ -544,14 +554,14 @@ class UserDetails(QWidget):
         edit_widget = QWidget(parent_widget)
         edit_layout = QHBoxLayout(edit_widget)
         edit_layout.setContentsMargins(0, 0, 0, 0)
-        edit_layout.setSpacing(0)  # 调整按钮间距，确保√和×靠近
+        edit_layout.setSpacing(5)  # 增加间距，确保按钮和输入框之间有空间
 
         if key == "name":
             editor = QLineEdit(label.text(), edit_widget)
             editor.setFont(QFont("微软雅黑", 14, QFont.Bold))
-            editor.setMaxLength(15)
+            editor.setMaxLength(15)  # 名字最大长度为15
             StyleGenerator.apply_style(editor, "line_edit")
-        else:
+        else:  # key == "sign"
             editor = AutoResizingTextEdit(label.text(), edit_widget, max_chars=100)
             editor.setFont(QFont("微软雅黑", 10))
             StyleGenerator.apply_style(editor, "text_edit")
@@ -559,23 +569,23 @@ class UserDetails(QWidget):
             editor.adjustHeight()
 
         editor.installEventFilter(self)
-        # 使用新的方法调整编辑器的宽度和字体，并用 partial 绑定参数
         editor.textChanged.connect(partial(self.adjustEditorWidthAndFont, editor, key))
         self.adjustEditorWidthAndFont(editor, key)
 
         edit_layout.addWidget(editor)
 
-        # 先添加确认按钮（√），再添加取消按钮（×）
-        confirm_btn = QPushButton("√", edit_widget)
+        # 添加确认按钮（使用 yes_icon.ico）
+        confirm_btn = QPushButton("", edit_widget)
         confirm_btn.setFixedSize(20, 20)
-        confirm_btn.setFont(QFont("微软雅黑", 13, QFont.Bold))
+        confirm_btn.setIcon(QIcon(resource_path("icon/yes_icon.ico")))
         confirm_btn.setStyleSheet("background: none; border: none;")
         confirm_btn.clicked.connect(partial(self._save_edit, key, editor, label, edit_widget))
         edit_layout.addWidget(confirm_btn)
 
-        cancel_btn = QPushButton("×", edit_widget)
+        # 添加取消按钮（使用 no_icon.ico）
+        cancel_btn = QPushButton("", edit_widget)
         cancel_btn.setFixedSize(20, 20)
-        cancel_btn.setFont(QFont("微软雅黑", 13, QFont.Bold))
+        cancel_btn.setIcon(QIcon(resource_path("icon/no_icon.ico")))
         cancel_btn.setStyleSheet("background: none; border: none;")
         cancel_btn.clicked.connect(partial(self._cancel_editing, key))
         edit_layout.addWidget(cancel_btn)

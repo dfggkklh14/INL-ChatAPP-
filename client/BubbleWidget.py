@@ -1,9 +1,8 @@
-import logging
 import os
 import json
 import asyncio
 from dataclasses import dataclass
-from typing import Optional, Any, Tuple, List
+from typing import Optional, Any, Tuple
 
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QSize, QRect, QPoint, pyqtSignal, QPropertyAnimation, QObject, QEvent
@@ -245,9 +244,7 @@ class ChatAreaWidget(QListWidget):
         self.viewport().update()
 
     async def remove_bubbles_by_rowids(self, deleted_rowids: list[int], show_floating_label: bool = True) -> None:
-        logging.debug(f"Entering remove_bubbles_by_rowids with deleted_rowids: {deleted_rowids}")
         if not deleted_rowids:
-            logging.debug("No rowids to delete, exiting")
             return
 
         items_to_remove = []
@@ -257,7 +254,6 @@ class ChatAreaWidget(QListWidget):
             bubble = next((w for w in container.children() if isinstance(w, ChatBubbleWidget)),
                           None) if container else None
             if bubble and bubble.rowid in deleted_rowids:
-                logging.debug(f"Found bubble to remove: rowid={bubble.rowid}")
                 items_to_remove.append(item)
                 # 如果是图片消息，记录 file_id
                 if bubble.message_type == "image" and bubble.file_id:
@@ -266,7 +262,6 @@ class ChatAreaWidget(QListWidget):
         for item in items_to_remove:
             row = self.row(item)
             container = self.itemWidget(item)
-            logging.debug(f"Removing item at row {row}")
             if row != -1:  # 确保 item 仍在列表中
                 self.takeItem(row)
                 self.bubble_items.remove(item)
@@ -275,10 +270,9 @@ class ChatAreaWidget(QListWidget):
                 if container and not sip.isdeleted(container):
                     container.deleteLater()
                 else:
-                    logging.warning(f"Container is None or deleted for item at row {row}")
+                    return
 
         if items_to_remove:
-            logging.debug(f"Removed {len(items_to_remove)} items")
             self.viewport().update()
             chat_window = self.window()
             chat_area = chat_window.chat_components.get('area_widget')

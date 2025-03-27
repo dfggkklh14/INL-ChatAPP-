@@ -1,7 +1,6 @@
 # Interface_Controls.py
 import asyncio
 import json
-import logging
 import os
 import sys
 from datetime import datetime, timedelta
@@ -12,7 +11,7 @@ import imageio
 
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QEasingCurve, QPropertyAnimation, QTimer, pyqtSignal, QRegularExpression
-from PyQt5.QtGui import QPainter, QColor, QFont, QFontMetrics, QPixmap, QImage, QIcon, QPainterPath, QPen, QResizeEvent, \
+from PyQt5.QtGui import QPainter, QColor, QFont, QFontMetrics, QPixmap, QPainterPath, QPen, QResizeEvent, \
     QRegularExpressionValidator
 from PyQt5.QtWidgets import QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout, QGraphicsOpacityEffect, QGridLayout, \
     QPushButton, QDialog, QLineEdit, QMessageBox
@@ -38,9 +37,7 @@ def save_theme_mode(mode: str) -> None:
     try:
         with open(THEME_CONFIG_PATH, 'w') as f:
             json.dump({"theme_mode": mode}, f)
-        logging.debug(f"主题模式已保存到 {THEME_CONFIG_PATH}")
-    except Exception as e:
-        logging.error(f"保存主题模式失败: {e}")
+    except Exception as e:raise
 
 def load_theme_mode() -> str:
     """从 Chat_DATA 文件夹读取保存的主题模式"""
@@ -50,8 +47,7 @@ def load_theme_mode() -> str:
             with open(THEME_CONFIG_PATH, 'r') as f:
                 config = json.load(f)
                 return config.get("theme_mode", default_mode)
-    except Exception as e:
-        logging.error(f"读取主题模式失败: {e}")
+    except Exception as e:raise
     return default_mode
 
 # ---------- 主题设置 ----------
@@ -90,9 +86,9 @@ DARK_THEME = {
     "ONLINE": QColor("#66ff66"),
     "OFFLINE": QColor("#888888"),
     "UNREAD": QColor("#ff6666"),
-    "Confirm_bg":QColor("#4d4d4d"),
+    "Confirm_bg":QColor("#404040"),
     "chat_bg": "#222222",
-    "widget_bg": "#4d4d4d",
+    "widget_bg": "#404040",
     "font_color": "#ffffff",
     "button_background": "#3a8f5a",
     "button_hover": "#4aa36c",
@@ -100,7 +96,7 @@ DARK_THEME = {
     "line_edit_border": "#555555",
     "line_edit_focus_border": "#4aa36c",
     "text_edit_border": "#555555",
-    "list_background": "#4d4d4d",
+    "list_background": "#404040",
     "list_item_hover": "#555555",
     "list_item_selected": "#4aa36c",
     "MAIN_INTERFACE": "#222222",
@@ -353,20 +349,20 @@ def create_themed_message_box(parent: QWidget, title: str, text: str, is_No: boo
         StyleGenerator.apply_style(label, "label")
     return msg_box
 
-def create_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode) -> QLineEdit:
+def create_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode, height:int=30) -> QLineEdit:
     le = QLineEdit(parent)
     le.setPlaceholderText(placeholder)
-    le.setFixedHeight(30)
+    le.setFixedHeight(height)
     le.setEchoMode(echo)
     StyleGenerator.apply_style(le, "line_edit")
     regex = QRegularExpression(r'^[a-zA-Z0-9!@#$%^&*()_+={}\[\]:;"\'<>,.?/\\|`~\-]*$')
     le.setValidator(QRegularExpressionValidator(regex, le))
     return le
 
-def name_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode) -> QLineEdit:
+def name_line_edit(parent: QWidget, placeholder: str, echo: QLineEdit.EchoMode, height:int=30) -> QLineEdit:
     le = QLineEdit(parent)
     le.setPlaceholderText(placeholder)
-    le.setFixedHeight(30)
+    le.setFixedHeight(height)
     le.setEchoMode(echo)
     StyleGenerator.apply_style(le, "line_edit")
     return le

@@ -43,9 +43,11 @@ def get_db_connection():
 
 
 def generate_username():
-    """生成8-10位随机数字的用户名"""
+    """生成8-10位随机数字的用户名，且首位不为0"""
     length = random.randint(8, 10)
-    return ''.join(random.choices("0123456789", k=length))
+    first_digit = random.choice("123456789")  # 首位不能是0
+    other_digits = ''.join(random.choices("0123456789", k=length - 1))
+    return first_digit + other_digits
 
 
 def generate_captcha_image():

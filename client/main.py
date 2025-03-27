@@ -364,7 +364,6 @@ class ChatWindow(QWidget):
         # 通知 OnLine 控件显示选择模式按钮
         if online := self.chat_components.get('online'):
             online.show_selection_buttons(self)
-        logging.debug("已进入多选模式")
 
     def exit_selection_mode(self) -> None:
         """退出多选模式"""
@@ -377,7 +376,6 @@ class ChatWindow(QWidget):
         chat_area = self.chat_components.get('chat')
         if chat_area:
             chat_area.clear_selection()
-        logging.debug("已退出多选模式")
 
     async def delete_selected_messages(self) -> None:
         chat_area = self.chat_components.get('chat')
@@ -405,13 +403,11 @@ class ChatWindow(QWidget):
         # 移除匹配的 file_id
         self.image_list = [(fid, fname) for fid, fname in self.image_list if fid not in file_ids]
         removed_count = original_len - len(self.image_list)
-        logging.debug(f"从 image_list 移除 {removed_count} 个图片资源，移除的 file_ids: {file_ids}")
 
         # 同步移除 active_bubbles 中对应的条目（可选）
         for rowid, bubble in list(self.active_bubbles.items()):
             if bubble.file_id in file_ids:
                 del self.active_bubbles[rowid]
-                logging.debug(f"从 active_bubbles 移除 rowid: {rowid}, file_id: {bubble.file_id}")
 
         # 更新 ImageViewer
         if self.image_viewer and not sip.isdeleted(self.image_viewer) and self.image_viewer.isVisible():
@@ -793,7 +789,6 @@ class ChatWindow(QWidget):
             old_unread = self.client.unread_messages.get(self.client.current_friend, 0)
             self.client.clear_unread_messages(self.client.current_friend)
             if old_unread > 0:  # 仅当未读消息数变化时更新
-                logging.debug(f"滚动条变化，当前好友 {self.client.current_friend} 未读消息从 {old_unread} 清零，精准更新")
                 run_async(self.update_friend_list(affected_users=[self.client.current_friend]))  # 精准更新
 
     def _scroll_to_bottom(self) -> None:
@@ -1101,7 +1096,6 @@ class ChatWindow(QWidget):
 
     async def update_conversations(self, friends: List[dict], affected_users: Optional[List[str]] = None,
                                    deleted_rowids: List[int] = None, show_floating_label: bool = False) -> None:
-        logging.debug(f"Updating conversations with deleted_rowids: {deleted_rowids}")
         chat_area = self.chat_components.get('chat')
         if affected_users:
             await self.update_friend_list(affected_users=affected_users)
@@ -1202,7 +1196,6 @@ class ChatWindow(QWidget):
                                 break
 
                 self.friend_list.updateGeometry()
-                logging.debug(f"好友列表更新完成，总数: {self.friend_list.count()}")
             except Exception as e:
                 logging.error(f"更新好友列表时发生异常: {e}")
 
@@ -1290,7 +1283,6 @@ class ChatWindow(QWidget):
                 if file_id and attachment_type in ["image", "video"]:
                     save_path = os.path.join(self.client.thumbnail_dir, f"{file_id}_thumbnail")
                     if not os.path.exists(save_path) or os.path.getsize(save_path) == 0:
-                        logging.debug(f"下载聊天记录缩略图: file_id={file_id}, save_path={save_path}")
                         result = await self.client.download_media(file_id, save_path, "thumbnail")
                         if result.get("status") != "success":
                             logging.error(f"缩略图下载失败: {result.get('message')}")
@@ -1376,8 +1368,6 @@ class ChatWindow(QWidget):
         if sb.maximum() - sb.value() <= 5:
             old_unread = self.client.unread_messages.get(friend, 0)
             self.client.clear_unread_messages(friend)
-            logging.debug(f"选择好友 {friend}，未读消息从 {old_unread} 清零，未更新好友列表")
-            # 手动更新当前好友的未读消息显示（如果需要）
             for i in range(self.friend_list.count()):
                 item = self.friend_list.item(i)
                 widget = self.friend_list.itemWidget(item)
@@ -1406,45 +1396,32 @@ class ChatWindow(QWidget):
         delattr(self, 'notification_sender')
 
     async def proc_add_friend(self, dialog: AddFriendDialog) -> None:
-        logging.debug("进入 proc_add_friend 方法")
         if friend_name := dialog.input.text().strip():
-            logging.debug(f"尝试添加好友: {friend_name}")
             resp = await self.client.add_friend(friend_name)  # 获取完整响应
-            logging.debug(f"add_friend 返回结果: {resp}")
 
             # 确保窗口可见
             if not self.isVisible():
-                logging.debug("ChatWindow 未显示，显示窗口")
                 self.show()
             if self.isMinimized():
-                logging.debug("ChatWindow 已最小化，恢复窗口")
                 self.showNormal()
 
             # 根据 status 判断结果
             if resp.get("status") == "success":
-                logging.debug(f"添加成功，创建 FloatingLabel: 已成功添加 {friend_name} 为好友")
                 label = FloatingLabel(f"已成功添加 {friend_name} 为好友", self)
             else:
-                logging.debug(f"添加失败，创建 FloatingLabel: 添加失败: {resp.get('message', '未知错误')}")
                 label = FloatingLabel(f"添加失败: {resp.get('message', '未知错误')}", self)
 
             label.show()
             label.raise_()
             QApplication.processEvents()
-            logging.debug("已调用 QApplication.processEvents()")
-
             dialog.accept()
-            logging.debug("对话框已关闭")
 
     async def async_show_add_friend(self) -> None:
-        logging.debug("进入 async_show_add_friend 方法")
         if self.add_friend_dialog and self.add_friend_dialog.isVisible():
-            logging.debug("已有对话框显示，提至前台")
             self.add_friend_dialog.raise_()
             self.add_friend_dialog.activateWindow()
             return
 
-        logging.debug("创建新的 AddFriendDialog")
         dialog = AddFriendDialog(self)
         self.add_friend_dialog = dialog
         fut = asyncio.get_running_loop().create_future()
@@ -1452,15 +1429,12 @@ class ChatWindow(QWidget):
         def set_future_result(_):
             if not fut.done():
                 fut.set_result(None)
-                logging.debug("对话框关闭，future 已设置结果")
 
         dialog.finished.connect(set_future_result)
         dialog.confirm_btn.clicked.connect(lambda: run_async(self.proc_add_friend(dialog)))
         dialog.show()
-        logging.debug("AddFriendDialog 已显示")
         await fut
         self.add_friend_dialog = None
-        logging.debug("async_show_add_friend 方法结束")
 
     def closeEvent(self, event):
         # 关闭所有打开的 FileConfirmDialog

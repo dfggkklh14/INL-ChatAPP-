@@ -1,7 +1,5 @@
 import asyncio
 import base64
-import logging
-import sys
 from PyQt5 import QtGui, QtWidgets
 from PyQt5.QtCore import Qt, QPoint, QRect, QSize, QTimer
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QPen, QBrush, QColor
@@ -403,9 +401,9 @@ class RegisterWindow(QDialog):
                     try:
                         await self.chat_client.register_task
                     except asyncio.CancelledError:
-                        logging.info("注册监听任务已取消")
+                        return
                 else:
-                    logging.debug("register_task 为 None 或无效，无需等待")
+                    return
 
             asyncio.create_task(cleanup_task())
 

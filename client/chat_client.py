@@ -77,7 +77,7 @@ class ChatClient(QObject):
             try:
                 await self.register_task
             except asyncio.CancelledError:
-                logging.info("注册监听任务已清理，为启动主监听做准备")
+                return
         self.reader_task = asyncio.create_task(self.start_reader())
 
     def _init_connection(self):
@@ -94,7 +94,6 @@ class ChatClient(QObject):
             try:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.client_socket.connect((self.config['host'], self.config['port']))
-                logging.info("连接服务器成功")
                 return
             except socket.error as e:
                 logging.warning(f"连接尝试 {attempt + 1}/{self.config['retries']} 失败: {e}")
@@ -123,7 +122,6 @@ class ChatClient(QObject):
                 raise Exception("响应头不完整")
             length = int.from_bytes(header, 'big')
             encrypted_response = self._recv_all(length)
-            print(self._decrypt(encrypted_response))
             return self._decrypt(encrypted_response)
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -135,7 +133,6 @@ class ChatClient(QObject):
             if not chunk:
                 raise Exception("接收数据异常")
             data += chunk
-            print(data)
         return data
 
     async def _recv_async(self, size: int) -> bytes:
@@ -145,7 +142,6 @@ class ChatClient(QObject):
             if not chunk:
                 raise ConnectionError("连接断开")
             data += chunk
-            print(data)
         return data
 
     async def authenticate(self, username: str, password: str) -> str:
@@ -183,7 +179,6 @@ class ChatClient(QObject):
             try:
                 header = await self._recv_async(4)
                 if len(header) < 4:
-                    logging.warning("接收到的头部数据不完整，继续等待")
                     continue
                 length = int.from_bytes(header, 'big')
                 encrypted_payload = await self._recv_async(length)
@@ -191,7 +186,6 @@ class ChatClient(QObject):
 
                 # 未登录状态下的消息过滤
                 if not self.is_authenticated and resp.get("type") not in ["user_register", "exit"]:
-                    logging.warning(f"未登录状态下收到意外消息: {resp}")
                     continue  # 丢弃非注册或退出相关的消息
 
                 # 处理退出消息
@@ -240,7 +234,6 @@ class ChatClient(QObject):
             while self.register_active:
                 header = await self._recv_async(4)
                 if len(header) < 4:
-                    logging.warning("注册监听：接收到的头部数据不完整，继续等待")
                     continue
                 length = int.from_bytes(header, 'big')
                 encrypted_payload = await self._recv_async(length)
@@ -251,7 +244,7 @@ class ChatClient(QObject):
                     if req_id in self.register_requests:
                         self.register_requests.pop(req_id).set_result(resp)
                 else:
-                    logging.warning(f"注册监听：收到无关消息，丢弃: {resp}")
+                    return
         except Exception as e:
             logging.error(f"注册监听失败: {e}")
             for fut in self.register_requests.values():
@@ -260,7 +253,6 @@ class ChatClient(QObject):
         finally:
             self.register_active = False
             self.register_task = None
-            logging.info("注册监听已终止")
 
     # 修改后的 register 方法
     async def register(self, subtype: str, session_id: str = None, captcha_input: str = None,
@@ -292,8 +284,6 @@ class ChatClient(QObject):
 
         # 处理响应
         if subtype == "register_1":
-            # 第一步：获取用户名和验证码
-            print(f"收到的register_1:{resp}")
             if resp.get("status") == "success":
                 return {
                     "status": "success",
@@ -308,7 +298,6 @@ class ChatClient(QObject):
                 return {"status": "error", "message": "请输入验证码"}
             req["captcha_input"] = captcha_input  # 确保这一行执行
             async with self.send_lock:
-                print(f"发送 register_2 请求: {req}")  # 添加调试日志
                 ciphertext = self._encrypt(req)
                 msg = self._pack_message(ciphertext)
                 self.client_socket.send(msg)
@@ -432,7 +421,6 @@ class ChatClient(QObject):
             "request_id": str(uuid.uuid4())
         }
         resp = await self.send_request(req)
-        logging.debug(f"收到的聊天记录: {resp}")
         parsed_resp = await self.parse_response(resp)
 
         # 处理缩略图下载
@@ -441,7 +429,6 @@ class ChatClient(QObject):
                 file_id = entry["file_id"]
                 save_path = os.path.join(self.thumbnail_dir, f"{file_id}_thumbnail")
                 if not os.path.exists(save_path) or os.path.getsize(save_path) == 0:  # 检查文件是否存在且有效
-                    logging.debug(f"下载聊天记录缩略图: file_id={file_id}, save_path={save_path}")
                     result = await self.download_media(file_id, save_path, "thumbnail")
                     if result.get("status") != "success":
                         logging.error(f"缩略图下载失败: {result.get('message')}")
@@ -636,9 +623,7 @@ class ChatClient(QObject):
                         "download_type": download_type,
                         "request_id": str(uuid.uuid4())
                     }
-                    logging.debug(f"请求下载: {req}")
                     resp = await self.send_request(req)
-                    logging.debug(f"下载响应: {resp}")
                     if resp.get("status") != "success":
                         return resp
                     total_size = resp.get("file_size", 0)
@@ -655,7 +640,6 @@ class ChatClient(QObject):
                         break
             if total_size and received_size != total_size:
                 return {"status": "error", "message": f"下载不完整: 收到 {received_size} / {total_size} 字节"}
-            logging.debug(f"下载完成: file_id={file_id}, save_path={save_path}")
             return {"status": "success", "message": "下载成功", "save_path": save_path}
         except Exception as e:
             if os.path.exists(save_path):
@@ -731,8 +715,7 @@ class ChatClient(QObject):
             try:
                 await self.reader_task
             except asyncio.CancelledError:
-                logging.info("reader_task 已取消")
+                raise
 
         self.is_authenticated = False
         self.username = None
-        logging.info("客户端连接已关闭")
