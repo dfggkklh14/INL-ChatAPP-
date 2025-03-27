@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import QFileDialog, QDialog, QWidget, QLabel, QLineEdit, QP
 from qasync import QtCore
 
 from Interface_Controls import StyleGenerator, theme_manager, create_line_edit, \
-    name_line_edit  # 从 Interface_Controls 导入
+    name_line_edit, FloatingLabel  # 从 Interface_Controls 导入
 
 
 # 图像裁剪窗口类
@@ -234,7 +234,7 @@ class RegisterWindow(QDialog):
         font = QtGui.QFont("微软雅黑", 12)
         self.id_label.setFont(font)
         self.id_label.setText(f"ID:{self.user_id}" if self.user_id else "ID:待生成")
-        self.id_label.setCursor(Qt.PointingHandCursor)  # 设置手型光标
+        self.id_label.setCursor(Qt.PointingHandCursor)
         StyleGenerator.apply_style(self.id_label, "label")
 
         # 添加悬浮效果
@@ -242,7 +242,6 @@ class RegisterWindow(QDialog):
             "color: #4aa36c; text-decoration: underline;")
         self.id_label.leaveEvent = lambda event: self.id_label.setStyleSheet(
             "color: #808080; text-decoration: none;")
-        # 添加点击复制功能
         self.id_label.mousePressEvent = self.copy_user_id
 
         avatar_container = QWidget()
@@ -269,13 +268,7 @@ class RegisterWindow(QDialog):
         self.image_verify_label.setAlignment(Qt.AlignCenter)
         self.image_verify_label.setMouseTracking(True)
         self.image_verify_label.setCursor(Qt.PointingHandCursor)
-        self.image_verify_label.mousePressEvent = self.refresh_captcha  # 点击刷新验证码
-
-        self.hint_label = QLabel("")
-        self.hint_label.setStyleSheet("color: #ff4444;")
-        self.hint_label.setAlignment(Qt.AlignCenter)
-        self.hint_label.setHidden(True)
-        StyleGenerator.apply_style(self.hint_label, "label")
+        self.image_verify_label.mousePressEvent = self.refresh_captcha
 
         self.register_button = QPushButton("注册")
         self.register_button.setMinimumHeight(35)
@@ -293,8 +286,7 @@ class RegisterWindow(QDialog):
 
         self.verify_layout.addWidget(self.input_verify, 0, 0, 1, 1)
         self.verify_layout.addWidget(self.image_verify_label, 0, 1, 1, 1)
-        self.verify_layout.addWidget(self.hint_label, 1, 0, 2, 2)
-        self.verify_layout.addWidget(self.register_button, 3, 0, 1, 2)
+        self.verify_layout.addWidget(self.register_button, 1, 0, 1, 2)
 
         self.register_layout.addWidget(self.verify_widget, 3, 0, 1, 1)
 
@@ -303,22 +295,16 @@ class RegisterWindow(QDialog):
         self.main_layout.addStretch()
 
     def copy_user_id(self, event):
-        """点击 id_label 复制 user_id 到剪贴板"""
         if self.user_id:
             clipboard = QtWidgets.QApplication.clipboard()
             clipboard.setText(self.user_id)
-            self.hint_label.setText("ID 已复制到剪贴板")
-            self.hint_label.setStyleSheet("color: #00ff00;")  # 绿色提示成功
-            self.hint_label.setHidden(False)
-            QTimer.singleShot(2000, lambda: self.hint_label.setHidden(True))  # 2秒后隐藏
-            QTimer.singleShot(2000, lambda: self.hint_label.setStyleSheet("color: #ff4444;"))  # 恢复红色
+            FloatingLabel("ID 已复制到剪贴板", self, 0.5, 1/6)
 
     def start_register_process(self):
-        """启动注册流程：获取用户名和验证码"""
         async def fetch_initial_data():
             resp = await self.chat_client.register("register_1")
             if resp.get("status") == "success":
-                self.user_id = resp.get("username")  # 将服务器返回的用户名赋值给 user_id
+                self.user_id = resp.get("username")
                 self.session_id = resp.get("session_id")
                 self.id_label.setText(f"ID:{self.user_id}")
                 captcha_img = base64.b64decode(resp.get("captcha_image"))
@@ -326,18 +312,14 @@ class RegisterWindow(QDialog):
                 pixmap.loadFromData(captcha_img)
                 self.image_verify_label.setPixmap(pixmap.scaled(80, 30, Qt.KeepAspectRatio))
             else:
-                self.hint_label.setText(resp.get("message", "无法连接服务器"))
-                self.hint_label.setHidden(False)
+                FloatingLabel(resp.get("message", "无法连接服务器"), self, 0.5, 1/6)
 
         asyncio.ensure_future(fetch_initial_data())
 
     def refresh_captcha(self, event):
-        """刷新验证码"""
-
         async def refresh():
             if not self.session_id:
-                self.hint_label.setText("请先获取初始验证码")
-                self.hint_label.setHidden(False)
+                FloatingLabel("请先获取初始验证码", self, 0.5, 1/6)
                 return
             resp = await self.chat_client.register("register_4", session_id=self.session_id)
             if resp.get("status") == "success":
@@ -345,45 +327,36 @@ class RegisterWindow(QDialog):
                 pixmap = QPixmap()
                 pixmap.loadFromData(captcha_img)
                 self.image_verify_label.setPixmap(pixmap.scaled(80, 30, Qt.KeepAspectRatio))
-                self.hint_label.setHidden(True)
             else:
-                self.hint_label.setText(resp.get("message", "刷新验证码失败"))
-                self.hint_label.setHidden(False)
+                FloatingLabel(resp.get("message", "刷新验证码失败"), self, 0.5, 1/6)
 
         asyncio.ensure_future(refresh())
 
     def submit_registration(self):
-        """提交注册信息，细化提示逻辑"""
         async def submit():
             captcha_input = self.input_verify.text().strip()
             password = self.input_password.text().strip()
             confirm_password = self.second_input_password.text().strip()
             nickname = self.input_name.text().strip()
 
-            # 细化提示逻辑
             if not captcha_input or not password or not confirm_password:
-                self.hint_label.setText("请填写完整信息")
-                self.hint_label.setHidden(False)
+                FloatingLabel("请填写完整信息", self, 0.5, 1/6)
                 return
             if password != confirm_password:
-                self.hint_label.setText("两次密码不一致")
-                self.hint_label.setHidden(False)
+                FloatingLabel("两次密码不一致", self, 0.5, 1/6)
                 return
 
-            # 第二步：验证验证码
             resp = await self.chat_client.register("register_2", session_id=self.session_id,
                                                    captcha_input=captcha_input)
             if resp.get("status") != "success":
-                self.hint_label.setText(resp.get("message", "验证码错误"))
-                self.hint_label.setHidden(False)
-                if "captcha_image" in resp:  # 验证码错误时刷新验证码
+                FloatingLabel(resp.get("message", "验证码错误"), self, 0.5, 1/6)
+                if "captcha_image" in resp:
                     captcha_img = base64.b64decode(resp.get("captcha_image"))
                     pixmap = QPixmap()
                     pixmap.loadFromData(captcha_img)
                     self.image_verify_label.setPixmap(pixmap.scaled(80, 30, Qt.KeepAspectRatio))
                 return
 
-            # 第三步：提交注册信息
             resp = await self.chat_client.register(
                 "register_3",
                 session_id=self.session_id,
@@ -393,13 +366,10 @@ class RegisterWindow(QDialog):
                 sign=""
             )
             if resp.get("status") == "success":
-                self.hint_label.setText("注册成功")
-                self.hint_label.setStyleSheet("color: #00ff00;")
-                self.hint_label.setHidden(False)
-                QTimer.singleShot(1000, self.accept)  # 1秒后关闭窗口
+                FloatingLabel("注册成功", self, 0.5, 1/6)
+                QTimer.singleShot(1000, self.accept)
             else:
-                self.hint_label.setText(resp.get("message", "注册失败"))
-                self.hint_label.setHidden(False)
+                FloatingLabel(resp.get("message", "注册失败"), self, 0.5, 1/6)
 
         asyncio.ensure_future(submit())
 
@@ -414,9 +384,8 @@ class RegisterWindow(QDialog):
                 self.local_avatar_path = pixmap
 
     def update_theme(self, theme: dict):
-        self.setStyleSheet(f"background-color: {theme['widget_bg']};")
+        self.setStyleSheet(f"background-color: {theme['MAIN_INTERFACE']};")
         self.id_label.setStyleSheet("color: #808080; text-decoration: none;")
-        StyleGenerator.apply_style(self.hint_label, "label")
         StyleGenerator.apply_style(self.input_name, "line_edit")
         StyleGenerator.apply_style(self.input_password, "line_edit")
         StyleGenerator.apply_style(self.second_input_password, "line_edit")
@@ -424,7 +393,6 @@ class RegisterWindow(QDialog):
         StyleGenerator.apply_style(self.register_button, "button", extra="border-radius: 5px;")
 
     def closeEvent(self, event):
-        # 终止注册监听任务
         if self.chat_client.register_active and self.chat_client.register_task:
             self.chat_client.register_active = False
             self.chat_client.register_task.cancel()
@@ -447,6 +415,5 @@ class RegisterWindow(QDialog):
         self.chat_client.register_requests.clear()
         self.session_id = None
 
-        # 移除对 parent 的依赖，直接接受事件并触发 finished 信号
         event.accept()
         self.finished.emit(QDialog.Rejected)

@@ -91,9 +91,13 @@ class LoginWindow(QDialog):
     def on_login(self) -> None:
         username, password = self.username_input.text().strip(), self.password_input.text().strip()
         if not username or not password:
-            QMessageBox.critical(self, "错误", "账号或密码不能为空")
+            success_label = FloatingLabel("账号或密码不能为空", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
+            success_label.show()
+            success_label.raise_()
         elif not self.chat_client or not self.chat_client.client_socket:
-            QMessageBox.critical(self, "错误", "未连接到服务器，请检查网络或重试")
+            success_label = FloatingLabel("未连接到服务器，请检查网络或重试", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
+            success_label.show()
+            success_label.raise_()
         else:
             run_async(self.async_login(username, password))
 
@@ -125,7 +129,9 @@ class LoginWindow(QDialog):
             self.chat_client.chat_window = self.main_app.chat_window
             self.main_app.chat_window.show()
         else:
-            QMessageBox.critical(self, "错误", res)
+            error_label = FloatingLabel(f"登录失败: {res}", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
+            error_label.show()
+            error_label.raise_()
 
     def reopen_login(self):
         # 注册窗口关闭时重新显示登录窗口

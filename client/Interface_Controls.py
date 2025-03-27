@@ -90,9 +90,9 @@ DARK_THEME = {
     "ONLINE": QColor("#66ff66"),
     "OFFLINE": QColor("#888888"),
     "UNREAD": QColor("#ff6666"),
-    "Confirm_bg":QColor("#333333"),
+    "Confirm_bg":QColor("#4d4d4d"),
     "chat_bg": "#222222",
-    "widget_bg": "#333333",
+    "widget_bg": "#4d4d4d",
     "font_color": "#ffffff",
     "button_background": "#3a8f5a",
     "button_hover": "#4aa36c",
@@ -100,7 +100,7 @@ DARK_THEME = {
     "line_edit_border": "#555555",
     "line_edit_focus_border": "#4aa36c",
     "text_edit_border": "#555555",
-    "list_background": "#333333",
+    "list_background": "#4d4d4d",
     "list_item_hover": "#555555",
     "list_item_selected": "#4aa36c",
     "MAIN_INTERFACE": "#222222",
@@ -416,7 +416,7 @@ class AddFriendDialog(QDialog):
 
 
 class FloatingLabel(QLabel):
-    def __init__(self, text: str, parent=None):
+    def __init__(self, text: str, parent=None, x_offset_ratio: float = 0.5, y_offset_ratio: float = 5/6):
         super().__init__(text, parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -437,6 +437,9 @@ class FloatingLabel(QLabel):
         self.opacity_effect.setOpacity(1.0)
         self.setGraphicsEffect(self.opacity_effect)
 
+        self.x_offset_ratio = x_offset_ratio
+        self.y_offset_ratio = y_offset_ratio
+
         if parent:
             self.parent = parent
             self.update_position()
@@ -446,7 +449,7 @@ class FloatingLabel(QLabel):
         QTimer.singleShot(1000, self.start_fade_out)
 
     def update_position(self):
-        """更新位置到父窗口中心偏下"""
+        """更新位置到父窗口的指定比例位置，默认中心偏下"""
         if self.parent:
             parent_rect = self.parent.geometry()
             parent_width = parent_rect.width()
@@ -454,9 +457,10 @@ class FloatingLabel(QLabel):
             label_width = self.width()
             label_height = self.height()
 
-            # 计算中心偏下位置
-            new_x = (parent_width - label_width) // 2
-            new_y = (parent_height // 2) + (parent_height // 3) - (label_height // 2)
+            # 计算基于传入比例的位置
+            new_x = int(parent_width * self.x_offset_ratio - label_width / 2)
+            new_y = int(parent_height * self.y_offset_ratio - label_height / 2)
+
             # 确保不超出边界
             new_x = max(0, min(new_x, parent_width - label_width))
             new_y = max(0, min(new_y, parent_height - label_height))
@@ -478,7 +482,7 @@ class FloatingLabel(QLabel):
         if obj == self.parent and event.type() == event.Resize:
             self.update_position()
             return False  # 事件未完全处理，允许继续传递
-        return super().eventFilter(obj, event)  # 其他情况交给父类处理
+        return super().eventFilter(obj, event)
 
 class FriendItemWidget(QWidget):
     """
