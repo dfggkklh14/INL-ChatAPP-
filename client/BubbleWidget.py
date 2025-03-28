@@ -383,18 +383,9 @@ class ChatBubbleWidget(QWidget):
         self.customContextMenuRequested.connect(self.show_context_menu)
 
     def _create_message_text_edit(self) -> None:
-        """创建用于显示附加消息的 QTextEdit"""
         self.message_text_edit = BubbleTextEdit(self, font=self.font_message)
-        self.message_text_edit.setFont(self.font_message)
-        self.message_text_edit.setStyleSheet("background: transparent; border: none; padding: 0px;")
-        self.message_text_edit.setTextContent(self.message)
-        self.message_text_edit.setReadOnly(True)
-        self.message_text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.message_text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.message_text_edit.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.message_text_edit.document().setDocumentMargin(0)
-        self.message_text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
-        self.message_text_edit.customContextMenuRequested.connect(self.show_context_menu)
+        self.message_text_edit.setTextContent(self.message)  # 设置文本内容
+        self.message_text_edit.customContextMenuRequested.connect(self.show_context_menu)  # 绑定上下文菜单信号
 
     def _setup_progress_bar(self) -> None:
         self.progress_bar = QProgressBar(self)
@@ -466,17 +457,9 @@ class ChatBubbleWidget(QWidget):
 
     def _create_text_widget(self) -> None:
         self.content_widget = BubbleTextEdit(self, font=self.font_message)
-        self.content_widget.setFont(self.font_message)
-        self.content_widget.setStyleSheet("background: transparent; border: none;")
-        self.content_widget.setReadOnly(True)
-        self.content_widget.setPlainText(self.message)
-        self.content_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.content_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.content_widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self.content_widget.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.content_widget.document().setDocumentMargin(0)
-        self.content_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.content_widget.customContextMenuRequested.connect(self.show_context_menu)
+        self.content_widget.setPlainText(self.message)  # 设置文本内容
+        self.content_widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 设置对齐方式
+        self.content_widget.customContextMenuRequested.connect(self.show_context_menu)  # 绑定上下文菜单信号
 
     def _create_image_widget(self) -> None:
         self.content_widget = QLabel(self)

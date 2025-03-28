@@ -494,18 +494,18 @@ class UserDetails(QWidget):
         - 对于签名输入框，当宽度超过可用范围时减小字体
         """
         # 按钮宽度（20 + 20） + 间距（5 * 2）
-        button_space = 50
+        button_space = 30
 
         if key == "sign":
-            available_width = self.container2.width() - 30 - button_space
+            available_width = self.container2.width() - (button_space * 2)
             default_font_size = 10
             font_weight = QFont.Normal
         elif key == "name":
-            available_width = self.container1.width() - 50 - button_space
+            available_width = self.container1.width()  - (button_space * 2)
             default_font_size = 14
             font_weight = QFont.Bold
         else:
-            available_width = editor.width() - button_space
+            available_width = editor.width() - (button_space * 2)
             default_font_size = 10
             font_weight = QFont.Normal
 
@@ -522,15 +522,15 @@ class UserDetails(QWidget):
         # 初始化字体和测量工具
         font = QFont("微软雅黑", default_font_size, font_weight)
         fm = QFontMetrics(font)
-        natural_width = fm.boundingRect(text).width() + 10
+        natural_width = fm.boundingRect(text).width() + 15
         new_font_size = default_font_size
 
-        if key == "name" and natural_width >= 140:
-            while natural_width >= 140 and new_font_size > min_font_size:
+        if key == "name" and natural_width >= 120:
+            while natural_width >= 120 and new_font_size > min_font_size:
                 new_font_size -= 1
                 font.setPointSize(new_font_size)
                 fm = QFontMetrics(font)
-                natural_width = fm.boundingRect(text).width() + 20
+                natural_width = fm.boundingRect(text).width() + 15
 
         # 处理签名输入框：宽度超限时减小字体
         elif key == "sign" and natural_width > available_width and new_font_size > min_font_size:

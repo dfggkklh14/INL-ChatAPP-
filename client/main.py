@@ -738,7 +738,7 @@ class ChatWindow(QWidget):
         if not self.image_viewer or not self.chat_components.get('area_widget'):
             return
         current_index = next((i for i, (fid, _) in enumerate(self.image_list) if fid == file_id), 0)
-        self.image_viewer.set_image_list(image_list=self.image_list, start_index=current_index, parent=self.chat_components.get('area_widget'))
+        self.image_viewer.set_image_list(image_list=self.image_list, start_index=current_index)
         self.image_viewer.show()
         self.image_viewer.raise_()
 
