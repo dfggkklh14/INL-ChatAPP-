@@ -51,19 +51,7 @@ def create_confirmation_dialog(parent: QWidget, title: str, message: str) -> int
 
 
 class BubbleTextEdit(QTextEdit):
-    """
-    专为聊天气泡设计的 QTextEdit 子类，统一设置常见属性和行为。
-    """
     def __init__(self, parent=None, font=None, read_only=True, wrap_mode=QTextEdit.WidgetWidth):
-        """
-        初始化 BubbleTextEdit。
-
-        Args:
-            parent: 父控件，默认为 None
-            font: 字体对象，默认为 None（可由调用者指定）
-            read_only: 是否只读，默认为 True
-            wrap_mode: 换行模式，默认为 WidgetWidth（按控件宽度换行）
-        """
         super().__init__(parent)
         self.setFont(font if font else QFont("微软雅黑", 9))
         self.setStyleSheet(
@@ -78,6 +66,21 @@ class BubbleTextEdit(QTextEdit):
         self.document().setDocumentMargin(0)
         self.setLineWrapMode(wrap_mode)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.setFocusPolicy(Qt.StrongFocus)  # 新增焦点策略
+        self.document().documentLayout().documentSizeChanged.connect(self.adjustSizeToContent)
+
+    def focusOutEvent(self, event):
+        """失去焦点时清除选中状态"""
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
+        super().focusOutEvent(event)
+
+    def adjustSizeToContent(self, size):
+        # 根据实际文档大小调整控件尺寸
+        self.setFixedWidth(int(size.width()))
+        self.setFixedHeight(int(size.height()))
+        self.viewport().scroll(0, 0)  # 锁定视口
 
     def setTextContent(self, text: str, alignment=Qt.AlignLeft | Qt.AlignTop):
         """
@@ -646,8 +649,11 @@ class ChatBubbleWidget(QWidget):
             doc = self.content_widget.document()
             max_edit_width = chat_area_max - 2 * h_padding
             doc.setTextWidth(max_edit_width)
-            ideal_width = int(doc.idealWidth())
-            content_width = max(ideal_width, time_size.width())
+            fm = QFontMetrics(self.font_message)
+            text_width = fm.horizontalAdvance(self.message) + 1  # 实际文本像素宽度+容差
+            max_edit_width = min(chat_area_max - 2 * h_padding, text_width)
+            doc.setTextWidth(max_edit_width)
+            content_width = max(max_edit_width, time_size.width())
             content_height = int(doc.size().height())
             content_size = QSize(content_width, content_height)
         elif is_media:
@@ -748,7 +754,7 @@ class ChatBubbleWidget(QWidget):
         top_margin = v_padding
         reply_gap = v_padding if self.reply_container else 0
 
-        # 计算回复容器位置
+        # 回复容器位置
         if self.reply_container:
             reply_x = bx + h_padding
             self.reply_container.setFixedSize(reply_size)
@@ -757,34 +763,39 @@ class ChatBubbleWidget(QWidget):
         else:
             y_offset = top_margin
 
-        # 计算内容位置
-        if self.align == "right":
+        # 内容位置调整
+        if self.message_type == 'text' and not self.is_current_user:  # 对方发送的文本消息
+            doc = self.content_widget.document()
+            message_width = int(doc.idealWidth())
+            if self._is_short_message(message_width):
+                content_x = bx + bubble_size.width() - message_width - h_padding
+            else:
+                content_x = bx + h_padding
+        elif self.align == "right":  # 当前用户发送
             content_x = bx + h_padding
-        else:
+        else:  # 其他情况（非文本或文件）
             content_x = bx + h_padding if self.message_type != 'file' else bx + bubble_size.width() - content_width - h_padding
+
         content_y = y_offset
         self.content_widget.move(int(content_x), int(content_y))
         self.content_widget.setFixedSize(int(content_width), int(content_size.height()))
 
-        # 计算附加消息位置
+        # 附加消息位置（保持不变或类似调整）
         message_y_offset = content_y + content_size.height()
         if self.message_text_edit:
             doc = self.message_text_edit.document()
             message_width = int(doc.idealWidth())
             message_height = int(doc.size().height())
-            is_short = self._is_short_message(message_width)
-            alignment = Qt.AlignRight if (self.align == "left" and is_short) else Qt.AlignLeft
-            self.message_text_edit.setTextContent(self.message, alignment)  # 更新对齐方式
-            message_x = bx + h_padding
-            if self.align == "left" and is_short:
-                message_x = bx + self._bubble_rect.width() - message_width - h_padding
+            alignment = Qt.AlignLeft  # 固定文字左对齐
+            self.message_text_edit.setTextContent(self.message, alignment)
+            message_x = bx + h_padding  # 默认靠左，附加消息暂不调整
             self.message_text_edit.move(int(message_x), int(message_y_offset))
             self.message_text_edit.setFixedSize(message_width, message_height)
             message_y_offset += message_height + v_padding
 
-        # 计算时间戳或进度条位置
+        # 时间戳或进度条位置
         total_content_height = message_y_offset if self.message_text_edit else content_y + content_size.height()
-        time_y = total_content_height  # 时间戳放在内容下方
+        time_y = total_content_height
         if self.is_current_user:
             time_x = bx + h_padding
         else:
@@ -915,8 +926,8 @@ class ChatBubbleWidget(QWidget):
             QMessageBox.critical(self, "错误", f"视频下载失败: {result.get('message', '未知错误')}")
 
     def _is_short_message(self, message_width: int) -> bool:
-        bubble_width = self._bubble_rect.width() - 2 * self.config.h_padding
-        return message_width < bubble_width * 0.6  # 60%宽度为阈值
+        bubble_available = self._bubble_rect.width() - 2 * self.config.h_padding
+        return message_width < bubble_available * 0.8  # 60%宽度为阈值
 
     async def download_media_file(self):
         if not self.file_id:
