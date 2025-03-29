@@ -27,6 +27,7 @@ from FileConfirmDialog import FileConfirmDialog
 from MessageInput import MessageInput
 from Viewer import ImageViewer
 from UserDetails import UserDetails
+from client.settings_page import SettingsWidget
 from register_page import RegisterWindow
 
 logging.basicConfig(
@@ -183,6 +184,7 @@ class ChatWindow(QWidget):
         self.image_viewer = None
         self.image_list = []
         self.user_details_widget = None
+        self.settings_widget = None
 
         # 连接信号
         self.client.friend_list_updated.connect(lambda friends: asyncio.create_task(self.update_friend_list(friends=friends)))
@@ -202,14 +204,15 @@ class ChatWindow(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        self.theme_panel = self._create_panel(self._create_theme_buttons, 0)
+        self.theme_panel = self._create_panel(self._create_theme_buttons, 0)  # 设置宽度为 50
         self.left_panel = self._create_friend_list_panel()
         self.content_widget = self._create_content_widget()
 
         main_layout.addWidget(self.theme_panel, 0, 0)
         main_layout.addWidget(self.left_panel, 0, 1)
         main_layout.addWidget(self.content_widget, 0, 2)
-        main_layout.setColumnStretch(2, 1)
+        main_layout.setColumnStretch(2, 1)  # 第 2 列伸缩
+        main_layout.setRowStretch(0, 1)  # 添加第 0 行伸缩，确保垂直扩展
         self.update_theme(theme_manager.current_theme)
 
     def _create_panel(self, button_setup: Callable[[QVBoxLayout], None], width: int) -> QWidget:
@@ -219,7 +222,6 @@ class ChatWindow(QWidget):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
         button_setup(layout)
-        layout.addStretch()
         return panel
 
     def _create_theme_buttons(self, layout: QVBoxLayout) -> None:
@@ -231,7 +233,7 @@ class ChatWindow(QWidget):
         }
         self.current_mode_index = self.modes.index(theme_manager.current_mode)  # 初始化当前模式索引
 
-        # 创建单个切换按钮
+        # 创建主题切换按钮
         self.theme_toggle_button = QPushButton(self)
         self.theme_toggle_button.setFixedHeight(30)
         StyleGenerator.apply_style(self.theme_toggle_button, "button", extra="border-radius: 4px;")
@@ -240,7 +242,7 @@ class ChatWindow(QWidget):
         self.theme_toggle_button.clicked.connect(self.toggle_theme_mode)
         layout.addWidget(self.theme_toggle_button)
 
-        # 添加“信息”按钮（保持不变）
+        # 添加“信息”按钮
         info_btn = QPushButton(self)
         info_btn.setFixedHeight(30)
         StyleGenerator.apply_style(info_btn, "button", extra="border-radius: 4px;")
@@ -257,6 +259,31 @@ class ChatWindow(QWidget):
         self.logout_button.setIconSize(QSize(15, 15))
         self.logout_button.clicked.connect(self.on_logout)
         layout.addWidget(self.logout_button)
+
+        # 添加伸缩项以填充剩余空间
+        layout.addStretch()
+
+        # 添加设置按钮，确保在最底部
+        self.settings_button = QPushButton(self)
+        self.settings_button.setFixedHeight(30)
+        StyleGenerator.apply_style(self.settings_button, "button", extra="border-radius: 4px;")
+        self.settings_button.setIcon(QIcon(resource_path("icon/settings_icon.ico")))
+        self.settings_button.setIconSize(QSize(15, 15))
+        self.settings_button.clicked.connect(self.show_settings)
+        layout.addWidget(self.settings_button)
+
+    def show_settings(self) -> None:
+        """显示设置窗口"""
+        if self.settings_widget is None:
+            self.settings_widget = SettingsWidget(self)
+        self.settings_widget.resize(self.size())
+        self.settings_widget.q2.adjust_size(self.size())
+        if self.settings_widget.isHidden():
+            self.settings_widget.show()
+        self.settings_widget.raise_()
+        self.settings_widget.activateWindow()
+        self.settings_widget.setFocus(Qt.OtherFocusReason)
+        self.settings_widget.q2.category_list.setFocus()  # 将焦点设置到 category_list
 
     def on_logout(self):
         # 创建确认对话框
@@ -586,6 +613,12 @@ class ChatWindow(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
 
+        # 更新 SettingsWidget 及其内部 SettingsDialog
+        if self.settings_widget and not sip.isdeleted(self.settings_widget) and self.settings_widget.isVisible():
+            self.settings_widget.resize(self.size())  # 调整 SettingsWidget 大小
+            self.settings_widget.q2.adjust_size(self.size())  # 调整 SettingsDialog 大小
+
+        # 保持原有逻辑
         chat_area = self.chat_components.get('chat')
         if not chat_area:
             return
@@ -595,7 +628,7 @@ class ChatWindow(QWidget):
         anchor_bubble = None
         anchor_offset = None
         viewport_top = old_value
-        for item in chat_area.bubble_items:  # 使用 bubble_items 而非 bubble_containers
+        for item in chat_area.bubble_items:
             container = chat_area.itemWidget(item)
             for widget in container.children():
                 if isinstance(widget, ChatBubbleWidget):
@@ -604,8 +637,8 @@ class ChatWindow(QWidget):
                         anchor_bubble = widget
                         anchor_offset = bubble_top - viewport_top
                         break
-            if anchor_bubble:
-                break
+                if anchor_bubble:
+                    break
         if not anchor_bubble:
             anchor_offset = 0
 
@@ -1429,6 +1462,11 @@ class ChatWindow(QWidget):
         for dialog in self.findChildren(FileConfirmDialog):
             if not sip.isdeleted(dialog):
                 dialog.close()
+
+        # 关闭设置窗口
+        if hasattr(self, 'settings_widget') and self.settings_widget and not sip.isdeleted(self.settings_widget):
+            self.settings_widget.close()
+
         # 清理聊天区域
         self.clear_chat_area()
         theme_manager.clear_observers()
