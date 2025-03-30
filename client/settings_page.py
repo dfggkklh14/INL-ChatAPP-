@@ -241,7 +241,6 @@ class SettingsFrame(QFrame):
         theme_manager.register(self.logout_button)
 
     def load_config_data(self):
-        # 保持原始配置加载逻辑
         config_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "config")
         config_path = os.path.join(config_dir, "config.json")
         if os.path.exists(config_path):
@@ -249,10 +248,15 @@ class SettingsFrame(QFrame):
                 config = json.load(f)
             cache_path = config.get("cache_path", os.path.join(os.path.dirname(__file__), "Chat_DATA"))
             notifications_enabled = config.get("notifications_enabled", True)
+            theme_mode = config.get("theme_mode", "light")  # 从 config.json 读取主题模式
             self.notification_checkbox.setChecked(notifications_enabled)
+            # 设置主题选择下拉框的当前值
+            current_mode = "浅色模式" if theme_mode == "light" else "深色模式"
+            self.theme_combo.setCurrentText(current_mode)
         else:
             cache_path = os.path.join(os.path.dirname(__file__), "Chat_DATA")
             self.notification_checkbox.setChecked(True)
+            self.theme_combo.setCurrentText("浅色模式")  # 默认浅色模式
         self.cache_path_edit.setText(cache_path)
 
     def connect_all_signals(self):

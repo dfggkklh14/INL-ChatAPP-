@@ -78,7 +78,13 @@ class ChatClient(QObject):
         os.makedirs(self.thumbnail_dir, exist_ok=True)
 
         self.chat_window = None
-        self._init_connection()
+        # 直接初始化变量，不调用 _connect
+        self.is_authenticated = False
+        self.username = self.current_friend = None
+        self.client_socket = None
+        self.send_lock = asyncio.Lock()
+        self.pending_requests = {}
+        self.reply_to_id = None
 
     async def start(self):
         if self.register_active and self.register_task:
@@ -91,13 +97,8 @@ class ChatClient(QObject):
         self.reader_task = asyncio.create_task(self.start_reader())
 
     def _init_connection(self):
-        self.is_authenticated = False
-        self.username = self.current_friend = None
-        self.client_socket = None
-        self.send_lock = asyncio.Lock()
-        self.pending_requests = {}
-        self.reply_to_id = None
-        self._connect()
+        if self.client_socket is None:  # 避免重复连接
+            self._connect()
 
     def _connect(self):
         for attempt in range(self.config['retries']):
@@ -273,51 +274,66 @@ class ChatClient(QObject):
             "subtype": subtype,
             "request_id": str(uuid.uuid4())
         }
-
         if session_id:
             req["session_id"] = session_id
 
-        # 如果 register_reader 未启动，则启动它
+        # 检查并异步初始化 socket
+        if not self.client_socket:
+            try:
+                # 使用 asyncio.to_thread 异步执行同步的 _connect 方法
+                await asyncio.to_thread(self._connect)
+            except ConnectionError as e:
+                logging.error(f"连接服务器失败")
+                return {"status": "error", "message": "无法连接到服务器，请检查网络后重试"}
+            except Exception as e:
+                logging.error(f"异步连接服务器时发生未知错误: {str(e)}")
+                return {"status": "error", "message": "连接服务器时发生错误，请稍后重试"}
+
         if not self.register_active:
             self.register_task = asyncio.create_task(self.register_reader())
 
         # 发送请求
-        async with self.send_lock:
-            ciphertext = self._encrypt(req)
-            msg = self._pack_message(ciphertext)
-            self.client_socket.send(msg)
+        try:
+            async with self.send_lock:
+                ciphertext = self._encrypt(req)
+                msg = self._pack_message(ciphertext)
+                self.client_socket.send(msg)
+        except AttributeError:  # 如果 self.client_socket 仍为 None
+            return {"status": "error", "message": "客户端未正确初始化，请重试"}
+        except Exception as e:
+            logging.error(f"发送注册请求失败")
+            return {"status": "error", "message": "发送请求失败"}
 
-        # 创建并等待 Future
+        # 等待响应
         fut = asyncio.get_event_loop().create_future()
         self.register_requests[req["request_id"]] = fut
         resp = await fut
 
-        # 处理响应
+        # 处理响应（保持原有逻辑）
         if subtype == "register_1":
             if resp.get("status") == "success":
                 return {
                     "status": "success",
                     "username": resp.get("username"),
-                    "captcha_image": resp.get("captcha_image"),  # base64 编码的图片
+                    "captcha_image": resp.get("captcha_image"),
                     "session_id": resp.get("session_id")
                 }
             return resp
-
         elif subtype == "register_2":
             if not captcha_input:
                 return {"status": "error", "message": "请输入验证码"}
-            req["captcha_input"] = captcha_input  # 确保这一行执行
+            req["captcha_input"] = captcha_input
             async with self.send_lock:
                 ciphertext = self._encrypt(req)
                 msg = self._pack_message(ciphertext)
-                self.client_socket.send(msg)
-            fut = asyncio.get_event_loop().create_future()
-            self.register_requests[req["request_id"]] = fut
-            return await fut
-
-
+                try:
+                    self.client_socket.send(msg)
+                except Exception as e:
+                    return {"status": "error", "message": f"发送请求失败: {str(e)}"}
+                fut = asyncio.get_event_loop().create_future()
+                self.register_requests[req["request_id"]] = fut
+                return await fut
         elif subtype == "register_3":
-            # 第三步：提交注册信息
             if not password:
                 return {"status": "error", "message": "密码不能为空"}
             req["password"] = password
@@ -333,36 +349,38 @@ class ChatClient(QObject):
             async with self.send_lock:
                 ciphertext = self._encrypt(req)
                 msg = self._pack_message(ciphertext)
-                self.client_socket.send(msg)
-            fut = asyncio.get_event_loop().create_future()
-            self.register_requests[req["request_id"]] = fut
-            resp = await fut
-            # 注册完成，关闭注册监听
-            if resp.get("status") == "success":
-                self.register_active = False
-                if self.register_task:
-                    self.register_task.cancel()
-            return resp
-
+                try:
+                    self.client_socket.send(msg)
+                except Exception as e:
+                    return {"status": "error", "message": f"发送请求失败: {str(e)}"}
+                fut = asyncio.get_event_loop().create_future()
+                self.register_requests[req["request_id"]] = fut
+                resp = await fut
+                if resp.get("status") == "success":
+                    self.register_active = False
+                    if self.register_task:
+                        self.register_task.cancel()
+                return resp
         elif subtype == "register_4":
-            # 第四步：刷新验证码
             if not session_id:
                 return {"status": "error", "message": "会话ID缺失"}
             async with self.send_lock:
                 ciphertext = self._encrypt(req)
                 msg = self._pack_message(ciphertext)
-                self.client_socket.send(msg)
-            fut = asyncio.get_event_loop().create_future()
-            self.register_requests[req["request_id"]] = fut
-            resp = await fut
-            if resp.get("status") == "success":
-                return {
-                    "status": "success",
-                    "captcha_image": resp.get("captcha_image"),
-                    "session_id": resp.get("session_id")
-                }
-            return resp
-
+                try:
+                    self.client_socket.send(msg)
+                except Exception as e:
+                    return {"status": "error", "message": f"发送请求失败: {str(e)}"}
+                fut = asyncio.get_event_loop().create_future()
+                self.register_requests[req["request_id"]] = fut
+                resp = await fut
+                if resp.get("status") == "success":
+                    return {
+                        "status": "success",
+                        "captcha_image": resp.get("captcha_image"),
+                        "session_id": resp.get("session_id")
+                    }
+                return resp
         return {"status": "error", "message": "未知的子类型"}
 
     async def parsing_new_message_or_media(self, resp: dict):

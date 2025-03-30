@@ -20,7 +20,7 @@ from qasync import QEventLoop
 
 from chat_client import ChatClient
 from Interface_Controls import (FriendItemWidget, OnLine, theme_manager, StyleGenerator, generate_thumbnail,
-                                FloatingLabel, run_async, load_theme_mode, AddFriendDialog, resource_path,
+                                FloatingLabel, run_async, load_config_value, AddFriendDialog, resource_path,
                                 create_line_edit, create_themed_message_box, format_time)
 from BubbleWidget import ChatAreaWidget, ChatBubbleWidget, create_confirmation_dialog
 from FileConfirmDialog import FileConfirmDialog
@@ -59,7 +59,7 @@ class LoginWindow(QDialog):
 
     def _setup_ui(self) -> None:
         self.setWindowTitle("ChatINL 登录")
-        self.setFixedSize(280, 140)
+        self.setFixedSize(240, 130)
         self.setWindowIcon(QIcon(resource_path("icon/icon.ico")))
 
         layout = QGridLayout(self)
@@ -74,10 +74,8 @@ class LoginWindow(QDialog):
         self.register_label.setAlignment(Qt.AlignCenter)
         self.register_label.setStyleSheet("color: #808080;")
         self.register_label.setCursor(Qt.PointingHandCursor)
-        self.register_label.enterEvent = lambda event: self.register_label.setStyleSheet(
-            "color: #4aa36c; text-decoration: underline;")
-        self.register_label.leaveEvent = lambda event: self.register_label.setStyleSheet(
-            "color: #808080; text-decoration: none;")
+        self.register_label.enterEvent = lambda event: self.register_label.setStyleSheet("color: #4aa36c; text-decoration: underline;")
+        self.register_label.leaveEvent = lambda event: self.register_label.setStyleSheet("color: #808080; text-decoration: none;")
         self.register_label.mousePressEvent = self.on_register
 
         layout.addWidget(self.username_input, 0, 1)
@@ -85,6 +83,7 @@ class LoginWindow(QDialog):
         layout.addWidget(self.login_button, 2, 1)
         layout.addWidget(self.register_label, 3, 1, alignment=Qt.AlignRight)
         layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 4)
         layout.setColumnStretch(2, 1)
         layout.setRowStretch(4, 1)
         self.update_theme(theme_manager.current_theme)
@@ -119,8 +118,15 @@ class LoginWindow(QDialog):
             self.main_app.register_window.activateWindow()
 
     async def async_login(self, username: str, password: str) -> None:
-        if not self.chat_client.is_authenticated:
-            self.chat_client._init_connection()
+        if not self.chat_client.client_socket:  # 如果未连接，尝试建立连接
+            try:
+                self.chat_client._init_connection()
+            except ConnectionError as e:
+                error_label = FloatingLabel(f"无法连接到服务器: {str(e)}", self, x_offset_ratio=0.5,
+                                            y_offset_ratio=1 / 6)
+                error_label.show()
+                error_label.raise_()
+                return
         res = await self.chat_client.authenticate(username, password)
         if res == "认证成功":
             self.accept()
@@ -1513,7 +1519,7 @@ class ChatApp:
         self.login_window = LoginWindow(self)
         self.chat_window: Optional[ChatWindow] = None
         self.register_window: Optional[RegisterWindow] = None  # 已存在，确保正确初始化
-        theme_manager.set_mode(load_theme_mode())
+        theme_manager.set_mode(load_config_value("theme_mode", "light"))  # 修改为新的加载方法
         self.login_window.update_theme(theme_manager.current_theme)
 
     def _setup_tray(self) -> None:

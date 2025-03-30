@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import logging
+
 from PyQt5 import QtGui, QtWidgets
 from PyQt5.QtCore import Qt, QPoint, QRect, QSize, QTimer
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QPen, QBrush, QColor
@@ -300,17 +302,21 @@ class RegisterWindow(QDialog):
 
     def start_register_process(self):
         async def fetch_initial_data():
-            resp = await self.chat_client.register("register_1")
-            if resp.get("status") == "success":
-                self.user_id = resp.get("username")
-                self.session_id = resp.get("session_id")
-                self.id_label.setText(f"ID:{self.user_id}")
-                captcha_img = base64.b64decode(resp.get("captcha_image"))
-                pixmap = QPixmap()
-                pixmap.loadFromData(captcha_img)
-                self.image_verify_label.setPixmap(pixmap.scaled(80, 30, Qt.KeepAspectRatio))
-            else:
-                FloatingLabel(resp.get("message", "无法连接服务器"), self, 0.5, 1/10)
+            try:
+                resp = await self.chat_client.register("register_1")
+                if resp.get("status") == "success":
+                    self.user_id = resp.get("username")
+                    self.session_id = resp.get("session_id")
+                    self.id_label.setText(f"ID:{self.user_id}")
+                    captcha_img = base64.b64decode(resp.get("captcha_image"))
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(captcha_img)
+                    self.image_verify_label.setPixmap(pixmap.scaled(80, 30, Qt.KeepAspectRatio))
+                else:
+                    FloatingLabel(resp.get("message", "无法连接到服务器"), self, 0.5, 1 / 10)
+            except Exception as e:
+                logging.error(f"注册初始化失败: {str(e)}")
+                FloatingLabel("无法连接到服务器，请检查网络后重试", self, 0.5, 1 / 10)
 
         asyncio.ensure_future(fetch_initial_data())
 

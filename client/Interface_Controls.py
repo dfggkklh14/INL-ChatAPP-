@@ -17,7 +17,6 @@ from PyQt5.QtWidgets import QWidget, QTextEdit, QHBoxLayout, QLabel, QVBoxLayout
     QPushButton, QDialog, QLineEdit, QMessageBox
 
 CACHE_ROOT = os.path.join(os.path.dirname(__file__), "Chat_DATA")
-THEME_CONFIG_PATH = os.path.join(CACHE_ROOT, "config/theme_config.json")
 
 # ---------- 实用函数 ----------
 
@@ -31,24 +30,43 @@ def resource_path(relative_path: str) -> str:
     base_path = getattr(sys, '_MEIPASS', os.path.abspath('.'))
     return os.path.join(base_path, relative_path)
 
-def save_theme_mode(mode: str) -> None:
-    """保存主题模式到 Chat_DATA 文件夹下的 theme_config.json"""
-    os.makedirs(CACHE_ROOT, exist_ok=True)  # 确保 Chat_DATA 文件夹存在
-    try:
-        with open(THEME_CONFIG_PATH, 'w') as f:
-            json.dump({"theme_mode": mode}, f)
-    except Exception as e:raise
 
-def load_theme_mode() -> str:
-    """从 Chat_DATA 文件夹读取保存的主题模式"""
-    default_mode = "light"
-    try:
-        if os.path.exists(THEME_CONFIG_PATH):
-            with open(THEME_CONFIG_PATH, 'r') as f:
+def save_config_value(key: str, value: Any) -> None:
+    """增量保存配置到 config.json"""
+    config_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "config")
+    config_path = os.path.join(config_dir, "config.json")
+    os.makedirs(config_dir, exist_ok=True)
+
+    config = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding='utf-8') as f:
                 config = json.load(f)
-                return config.get("theme_mode", default_mode)
-    except Exception as e:raise
-    return default_mode
+        except Exception as e:
+            raise
+
+    if config.get(key) != value:
+        config[key] = value
+        try:
+            with open(config_path, "w", encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            raise
+
+
+def load_config_value(key: str, default: Any) -> Any:
+    """从 config.json 读取配置值"""
+    config_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "config")
+    config_path = os.path.join(config_dir, "config.json")
+
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding='utf-8') as f:
+                config = json.load(f)
+                return config.get(key, default)
+    except Exception as e:
+        raise
+    return default
 
 # ---------- 主题设置 ----------
 
@@ -192,12 +210,9 @@ class StyleGenerator:
             theme_manager.register(widget)
 
 class ThemeManager:
-    """
-    主题管理器，负责切换主题及通知所有观察者。
-    """
     def __init__(self) -> None:
         self.themes = {"light": LIGHT_THEME, "dark": DARK_THEME}
-        self.current_mode = load_theme_mode()  # 加载保存的模式
+        self.current_mode = load_config_value("theme_mode", "light")  # 从 config.json 加载
         self.current_theme = self.themes[self.current_mode]
         self.observers: List[Any] = []
 
@@ -205,7 +220,7 @@ class ThemeManager:
         if mode in self.themes:
             self.current_mode = mode
             self.current_theme = self.themes[mode]
-            save_theme_mode(mode)  # 保存新选择的模式
+            save_config_value("theme_mode", mode)  # 保存到 config.json
             self.notify_observers()
 
     def notify_observers(self) -> None:
