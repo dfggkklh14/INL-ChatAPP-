@@ -158,7 +158,22 @@ class StyleGenerator:
                 "QLineEdit:focus {{ border: 1px solid {line_edit_focus_border}; }}"
                 "QLineEdit::placeholder {{ color: {line_edit_border}; }}"
             )
-        }
+              },
+        "checkbox": (
+            "QCheckBox {{ color: {font_color}; spacing: 5px; }}"
+            "QCheckBox::indicator {{ width: 10px; height: 10px; border-radius: 5px; }}"  # 16px / 2 = 8px
+            "QCheckBox::indicator:unchecked {{ border: 1px solid {line_edit_border}; background-color: {chat_bg}; border-radius: 5px; }}"
+            "QCheckBox::indicator:checked {{ border: 1px solid #4aa36c; background-color: #4aa36c; border-radius: 5px; }}"
+        ),
+        "combo_box": (
+            "QComboBox {{ background-color: {widget_bg}; color: {font_color}; border: 1px solid {line_edit_border}; "
+            "border-radius: 4px; padding: 2px 5px; outline: none; }}"  # 添加 outline: none
+            "QComboBox:hover {{ border: 1px solid {line_edit_focus_border}; }}"
+            "QComboBox:focus {{ border: 1px solid {line_edit_focus_border}; outline: none; }}"  # 确保焦点时无虚线
+            "QComboBox::drop-down {{ border: none; width: 40px; }}"
+            "QComboBox QAbstractItemView {{ background-color: {widget_bg}; color: {font_color}; "
+            "selection-background-color: {list_item_selected}; selection-color: {button_text_color}; outline: none; }}"  # 下拉菜单也移除虚线
+        )
     }
 
     @staticmethod
@@ -222,6 +237,7 @@ FONTS = {
     'FILE_NAME': QFont("微软雅黑", 10),
     'FILE_SIZE': QFont("微软雅黑", 8),
     'USERNAME': QFont("微软雅黑", 12, QFont.Bold),
+    'settingClass': QFont("微软雅黑", 10, QFont.Bold),
     'ONLINE_SIZE': 10
 }
 

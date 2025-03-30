@@ -56,17 +56,27 @@ class ChatClient(QObject):
         }
         self.is_running = True
         self.reader_task = None
-        self.register_task = None  # 用于注册监听
-        self.register_active = False  # 标记注册监听状态
-        self.register_requests = {}  # 存储注册请求的 Future
+        self.register_task = None
+        self.register_active = False
+        self.register_requests = {}
         self.lock = asyncio.Lock()
         self.friends = []
         self.unread_messages = {}
-        self.cache_root = os.path.join(os.path.dirname(__file__), "Chat_DATA")
+
+        # 从 config.json 加载缓存路径
+        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding='utf-8') as f:
+                config = json.load(f)
+            self.cache_root = config.get("cache_path", os.path.join(os.path.dirname(__file__), "Chat_DATA"))
+        else:
+            self.cache_root = os.path.join(os.path.dirname(__file__), "Chat_DATA")
+
         self.avatar_dir = os.path.join(self.cache_root, "avatars")
         self.thumbnail_dir = os.path.join(self.cache_root, "thumbnails")
         os.makedirs(self.avatar_dir, exist_ok=True)
         os.makedirs(self.thumbnail_dir, exist_ok=True)
+
         self.chat_window = None
         self._init_connection()
 

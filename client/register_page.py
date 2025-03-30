@@ -296,7 +296,7 @@ class RegisterWindow(QDialog):
         if self.user_id:
             clipboard = QtWidgets.QApplication.clipboard()
             clipboard.setText(self.user_id)
-            FloatingLabel("ID 已复制到剪贴板", self, 0.5, 1/6)
+            FloatingLabel("ID 已复制到剪贴板", self, 0.5, 1/10)
 
     def start_register_process(self):
         async def fetch_initial_data():
@@ -310,14 +310,14 @@ class RegisterWindow(QDialog):
                 pixmap.loadFromData(captcha_img)
                 self.image_verify_label.setPixmap(pixmap.scaled(80, 30, Qt.KeepAspectRatio))
             else:
-                FloatingLabel(resp.get("message", "无法连接服务器"), self, 0.5, 1/6)
+                FloatingLabel(resp.get("message", "无法连接服务器"), self, 0.5, 1/10)
 
         asyncio.ensure_future(fetch_initial_data())
 
     def refresh_captcha(self, event):
         async def refresh():
             if not self.session_id:
-                FloatingLabel("请先获取初始验证码", self, 0.5, 1/6)
+                FloatingLabel("请先获取初始验证码", self, 0.5, 1/10)
                 return
             resp = await self.chat_client.register("register_4", session_id=self.session_id)
             if resp.get("status") == "success":
@@ -326,7 +326,7 @@ class RegisterWindow(QDialog):
                 pixmap.loadFromData(captcha_img)
                 self.image_verify_label.setPixmap(pixmap.scaled(80, 30, Qt.KeepAspectRatio))
             else:
-                FloatingLabel(resp.get("message", "刷新验证码失败"), self, 0.5, 1/6)
+                FloatingLabel(resp.get("message", "刷新验证码失败"), self, 0.5, 1/10)
 
         asyncio.ensure_future(refresh())
 
@@ -338,16 +338,16 @@ class RegisterWindow(QDialog):
             nickname = self.input_name.text().strip()
 
             if not captcha_input or not password or not confirm_password:
-                FloatingLabel("请填写完整信息", self, 0.5, 1/6)
+                FloatingLabel("请填写完整信息", self, 0.5, 1/10)
                 return
             if password != confirm_password:
-                FloatingLabel("两次密码不一致", self, 0.5, 1/6)
+                FloatingLabel("两次密码不一致", self, 0.5, 1/10)
                 return
 
             resp = await self.chat_client.register("register_2", session_id=self.session_id,
                                                    captcha_input=captcha_input)
             if resp.get("status") != "success":
-                FloatingLabel(resp.get("message", "验证码错误"), self, 0.5, 1/6)
+                FloatingLabel(resp.get("message", "验证码错误"), self, 0.5, 1/10)
                 if "captcha_image" in resp:
                     captcha_img = base64.b64decode(resp.get("captcha_image"))
                     pixmap = QPixmap()
@@ -364,10 +364,10 @@ class RegisterWindow(QDialog):
                 sign=""
             )
             if resp.get("status") == "success":
-                FloatingLabel("注册成功", self, 0.5, 1/6)
+                FloatingLabel("注册成功", self, 0.5, 1/10)
                 QTimer.singleShot(1000, self.accept)
             else:
-                FloatingLabel(resp.get("message", "注册失败"), self, 0.5, 1/6)
+                FloatingLabel(resp.get("message", "注册失败"), self, 0.5, 1/10)
 
         asyncio.ensure_future(submit())
 

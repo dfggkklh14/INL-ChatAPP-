@@ -225,23 +225,6 @@ class ChatWindow(QWidget):
         return panel
 
     def _create_theme_buttons(self, layout: QVBoxLayout) -> None:
-        # 定义模式列表和图标映射
-        self.modes = ["light", "dark"]
-        self.mode_icons = {
-            "light": "icon/Day_Icon.ico",
-            "dark": "icon/Night_Icon.ico"
-        }
-        self.current_mode_index = self.modes.index(theme_manager.current_mode)  # 初始化当前模式索引
-
-        # 创建主题切换按钮
-        self.theme_toggle_button = QPushButton(self)
-        self.theme_toggle_button.setFixedHeight(30)
-        StyleGenerator.apply_style(self.theme_toggle_button, "button", extra="border-radius: 4px;")
-        self.theme_toggle_button.setIcon(QIcon(resource_path(self.mode_icons[theme_manager.current_mode])))
-        self.theme_toggle_button.setIconSize(QSize(15, 15))
-        self.theme_toggle_button.clicked.connect(self.toggle_theme_mode)
-        layout.addWidget(self.theme_toggle_button)
-
         # 添加“信息”按钮
         info_btn = QPushButton(self)
         info_btn.setFixedHeight(30)
@@ -250,15 +233,6 @@ class ChatWindow(QWidget):
         info_btn.setIconSize(QSize(15, 15))
         info_btn.clicked.connect(lambda: run_async(self.show_user_info()))
         layout.addWidget(info_btn)
-
-        # 添加退出按钮
-        self.logout_button = QPushButton(self)
-        self.logout_button.setFixedHeight(30)
-        StyleGenerator.apply_style(self.logout_button, "button", extra="border-radius: 4px;")
-        self.logout_button.setIcon(QIcon(resource_path("icon/quit_icon.ico")))
-        self.logout_button.setIconSize(QSize(15, 15))
-        self.logout_button.clicked.connect(self.on_logout)
-        layout.addWidget(self.logout_button)
 
         # 添加伸缩项以填充剩余空间
         layout.addStretch()
@@ -309,20 +283,6 @@ class ChatWindow(QWidget):
                 self.main_app.chat_window.deleteLater()
                 self.main_app.chat_window = None
         run_async(async_logout())
-
-    def toggle_theme_mode(self) -> None:
-        # 切换到下一个模式
-        self.current_mode_index = (self.current_mode_index + 1) % len(self.modes)
-        new_mode = self.modes[self.current_mode_index]
-        # 更新主题
-        theme_manager.set_mode(new_mode)
-        self.update_theme(theme_manager.current_theme)
-        # 更新按钮图标
-        self.theme_toggle_button.setIcon(QIcon(resource_path(self.mode_icons[new_mode])))
-        mode_name = "浅色模式" if new_mode == "light" else "深色模式"
-        floating_label = FloatingLabel(f"已切换到{mode_name}", self)
-        floating_label.show()
-        floating_label.raise_()
 
     async def show_user_info(self) -> None:
         if not self.client.is_authenticated:
@@ -1398,8 +1358,21 @@ class ChatWindow(QWidget):
                     break
 
     def show_notification(self, sender: str, msg: str) -> None:
-        self.notification_sender = sender.replace("用户 ", "").rstrip(":")
-        self.main_app.tray_icon.showMessage(sender, msg, QIcon(resource_path("icon/icon.ico")), 2000)
+        """显示系统托盘通知，任务栏闪烁始终启用"""
+        # 检查通知设置（仅影响托盘通知）
+        config_path = os.path.join(os.path.dirname(__file__), "Chat_DATA", "config", "config.json")
+        notifications_enabled = True  # 默认开启
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding='utf-8') as f:
+                config = json.load(f)
+            notifications_enabled = config.get("notifications_enabled", True)
+
+        # 托盘通知受开关控制
+        if notifications_enabled:
+            self.notification_sender = sender.replace("用户 ", "").rstrip(":")
+            self.main_app.tray_icon.showMessage(sender, msg, QIcon(resource_path("icon/icon.ico")), 2000)
+
+        # 任务栏闪烁始终执行，不受通知开关控制
         self.flash_taskbar_icon()
 
     def on_notification_clicked(self) -> None:
