@@ -127,7 +127,7 @@ class ChatClient(QObject):
                 if attempt < self.config['retries'] - 1:
                     await asyncio.sleep(self.config['delay'])  # 异步等待
         # 重试结束后仍未连接成功，抛出异常
-        raise ConnectionError(f"无法连接到服务器，经过 {self.config['retries']} 次尝试后失败")
+        raise ConnectionError(f"无法连接到服务器")
 
     def _pack_message(self, data: bytes) -> bytes:
         return len(data).to_bytes(4, 'big') + data

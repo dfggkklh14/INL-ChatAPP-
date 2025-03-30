@@ -124,7 +124,7 @@ class LoginWindow(QDialog):
                 await self.chat_client._init_connection()  # 异步初始化连接
                 logging.debug("连接服务器成功")
             except ConnectionError as e:
-                error_msg = f"未连接到服务器: {str(e)}"
+                error_msg = f"未连接到服务器"
                 logging.error(error_msg)
                 error_label = FloatingLabel(error_msg, self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
                 error_label.show()
