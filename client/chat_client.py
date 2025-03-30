@@ -78,7 +78,6 @@ class ChatClient(QObject):
         os.makedirs(self.thumbnail_dir, exist_ok=True)
 
         self.chat_window = None
-        # 直接初始化变量，不调用 _connect
         self.is_authenticated = False
         self.username = self.current_friend = None
         self.client_socket = None
@@ -96,21 +95,39 @@ class ChatClient(QObject):
                 return
         self.reader_task = asyncio.create_task(self.start_reader())
 
-    def _init_connection(self):
-        if self.client_socket is None:  # 避免重复连接
-            self._connect()
+    async def _init_connection(self):
+        # 如果已有 socket 但未连接，先清理
+        if self.client_socket is not None:
+            try:
+                self.client_socket.close()
+            except Exception as e:
+                logging.error(f"清理旧 socket 时出错: {e}")
+            self.client_socket = None
+        await self._connect()
 
-    def _connect(self):
+    async def _connect(self):
+        if self.client_socket is not None:
+            return  # 如果已有连接，直接返回
         for attempt in range(self.config['retries']):
             try:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.client_socket.connect((self.config['host'], self.config['port']))
+                loop = asyncio.get_event_loop()
+                await loop.sock_connect(self.client_socket, (self.config['host'], self.config['port']))
+                logging.info("成功连接到服务器")
                 return
-            except socket.error as e:
+            except (socket.error, ConnectionError) as e:
                 logging.warning(f"连接尝试 {attempt + 1}/{self.config['retries']} 失败: {e}")
+                # 清理失败的 socket
+                if self.client_socket is not None:
+                    try:
+                        self.client_socket.close()
+                    except Exception as close_error:
+                        logging.error(f"关闭失败的 socket 时出错: {close_error}")
+                    self.client_socket = None
                 if attempt < self.config['retries'] - 1:
-                    time.sleep(self.config['delay'])
-        raise ConnectionError("无法连接到服务器")
+                    await asyncio.sleep(self.config['delay'])  # 异步等待
+        # 重试结束后仍未连接成功，抛出异常
+        raise ConnectionError(f"无法连接到服务器，经过 {self.config['retries']} 次尝试后失败")
 
     def _pack_message(self, data: bytes) -> bytes:
         return len(data).to_bytes(4, 'big') + data
@@ -162,11 +179,25 @@ class ChatClient(QObject):
             "password": password,
             "request_id": str(uuid.uuid4())
         }
-        resp = await asyncio.to_thread(self._sync_send_recv, req)
-        if resp.get("status") == "success":
-            self.username, self.is_authenticated = username, True
-            return "认证成功"
-        return resp.get("message", "账号或密码错误")
+        if not self.client_socket:
+            logging.error("认证失败：socket 未初始化")
+            return "连接未建立"
+        try:
+            resp = await asyncio.to_thread(self._sync_send_recv, req)
+            if resp.get("status") == "success":
+                self.username, self.is_authenticated = username, True
+                return "认证成功"
+            return resp.get("message", "账号或密码错误")
+        except Exception as e:
+            logging.error(f"认证请求失败: {str(e)}")
+            # 如果发生异常，清理 socket
+            if self.client_socket is not None:
+                try:
+                    self.client_socket.close()
+                except Exception as close_error:
+                    logging.error(f"关闭 socket 时出错: {close_error}")
+                self.client_socket = None
+            return f"认证失败: {str(e)}"
 
     async def update_friend_remarks(self, friend: str, remarks: str) -> dict:
         req = {
@@ -265,10 +296,8 @@ class ChatClient(QObject):
             self.register_active = False
             self.register_task = None
 
-    # 修改后的 register 方法
     async def register(self, subtype: str, session_id: str = None, captcha_input: str = None,
                        password: str = None, avatar: QPixmap = None, nickname: str = None, sign: str = None) -> dict:
-        """处理用户注册请求"""
         req = {
             "type": "user_register",
             "subtype": subtype,
@@ -277,17 +306,13 @@ class ChatClient(QObject):
         if session_id:
             req["session_id"] = session_id
 
-        # 检查并异步初始化 socket
+        # 异步检查并初始化 socket
         if not self.client_socket:
             try:
-                # 使用 asyncio.to_thread 异步执行同步的 _connect 方法
-                await asyncio.to_thread(self._connect)
+                await self._connect()  # 改为异步调用
             except ConnectionError as e:
-                logging.error(f"连接服务器失败")
+                logging.error(f"连接服务器失败: {str(e)}")
                 return {"status": "error", "message": "无法连接到服务器，请检查网络后重试"}
-            except Exception as e:
-                logging.error(f"异步连接服务器时发生未知错误: {str(e)}")
-                return {"status": "error", "message": "连接服务器时发生错误，请稍后重试"}
 
         if not self.register_active:
             self.register_task = asyncio.create_task(self.register_reader())

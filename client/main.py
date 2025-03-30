@@ -83,7 +83,7 @@ class LoginWindow(QDialog):
         layout.addWidget(self.login_button, 2, 1)
         layout.addWidget(self.register_label, 3, 1, alignment=Qt.AlignRight)
         layout.setColumnStretch(0, 1)
-        layout.setColumnStretch(1, 4)
+        layout.setColumnStretch(1, 3)
         layout.setColumnStretch(2, 1)
         layout.setRowStretch(4, 1)
         self.update_theme(theme_manager.current_theme)
@@ -94,11 +94,11 @@ class LoginWindow(QDialog):
             success_label = FloatingLabel("账号或密码不能为空", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
             success_label.show()
             success_label.raise_()
-        elif not self.chat_client or not self.chat_client.client_socket:
-            success_label = FloatingLabel("未连接到服务器，请检查网络或重试", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
-            success_label.show()
-            success_label.raise_()
         else:
+            # 修改按钮状态
+            self.login_button.setText("正在连接服务器")
+            self.login_button.setEnabled(False)
+            QApplication.processEvents()  # 强制刷新 UI
             run_async(self.async_login(username, password))
 
     def on_register(self, event) -> None:
@@ -118,27 +118,57 @@ class LoginWindow(QDialog):
             self.main_app.register_window.activateWindow()
 
     async def async_login(self, username: str, password: str) -> None:
+        logging.debug(f"开始登录尝试: username={username}")
         if not self.chat_client.client_socket:  # 如果未连接，尝试建立连接
             try:
-                self.chat_client._init_connection()
+                await self.chat_client._init_connection()  # 异步初始化连接
+                logging.debug("连接服务器成功")
             except ConnectionError as e:
-                error_label = FloatingLabel(f"无法连接到服务器: {str(e)}", self, x_offset_ratio=0.5,
-                                            y_offset_ratio=1 / 6)
+                error_msg = f"未连接到服务器: {str(e)}"
+                logging.error(error_msg)
+                error_label = FloatingLabel(error_msg, self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
                 error_label.show()
                 error_label.raise_()
+                # 连接失败，恢复按钮状态
+                self.login_button.setText("登录")
+                self.login_button.setEnabled(True)
+                QApplication.processEvents()
                 return
-        res = await self.chat_client.authenticate(username, password)
-        if res == "认证成功":
-            self.accept()
-            await self.chat_client.start()
-            if not self.main_app.chat_window:
-                self.main_app.chat_window = ChatWindow(self.chat_client, self.main_app)
-            self.chat_client.chat_window = self.main_app.chat_window
-            self.main_app.chat_window.show()
-        else:
-            error_label = FloatingLabel(f"登录失败: {res}", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
+
+        # 连接成功后进行认证
+        try:
+            res = await self.chat_client.authenticate(username, password)
+            logging.debug(f"认证结果: {res}")
+            if res == "认证成功":
+                self.accept()
+                await self.chat_client.start()
+                if not self.main_app.chat_window:
+                    self.main_app.chat_window = ChatWindow(self.chat_client, self.main_app)
+                self.chat_client.chat_window = self.main_app.chat_window
+                self.main_app.chat_window.show()
+            else:
+                error_label = FloatingLabel(f"登录失败: {res}", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
+                error_label.show()
+                error_label.raise_()
+                # 认证失败，恢复按钮状态
+                self.login_button.setText("登录")
+                self.login_button.setEnabled(True)
+                QApplication.processEvents()
+        except Exception as e:
+            logging.error(f"认证过程中发生异常: {str(e)}")
+            error_label = FloatingLabel(f"登录失败: {str(e)}", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
             error_label.show()
             error_label.raise_()
+            # 异常情况，恢复按钮状态并清理 socket
+            if self.chat_client.client_socket is not None:
+                try:
+                    self.chat_client.client_socket.close()
+                except Exception as close_error:
+                    logging.error(f"关闭 socket 时出错: {close_error}")
+                self.chat_client.client_socket = None
+            self.login_button.setText("登录")
+            self.login_button.setEnabled(True)
+            QApplication.processEvents()
 
     def reopen_login(self):
         # 注册窗口关闭时重新显示登录窗口
