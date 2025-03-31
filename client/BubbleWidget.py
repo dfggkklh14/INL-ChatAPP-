@@ -134,6 +134,10 @@ class ChatAreaWidget(QListWidget):
                     asyncio.create_task(chat_window.send_multiple_media(file_paths))
                 event.acceptProposedAction()
 
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
     def mousePressEvent(self, event: QEvent) -> None:
         chat_window = self.window()
         if (hasattr(chat_window, 'is_selection_mode') and chat_window.is_selection_mode and
@@ -347,6 +351,7 @@ class ChatBubbleWidget(QWidget):
         self.installEventFilter(self)
         theme_manager.register(self)
         self._msg_box = None
+        self.progress_bars = {}
 
     def _init_ui(self) -> None:
         self.font_message = QFont(FONTS['MESSAGE'])
@@ -932,10 +937,8 @@ class ChatBubbleWidget(QWidget):
     async def download_media_file(self):
         if not self.file_id:
             return
-        # 从客户端获取路径基准
         client = self.window().client
         cache_root = client.cache_root
-        # 根据消息类型定义默认路径和配置
         download_configs = {
             'file': {
                 'title': "保存文件",
@@ -957,20 +960,29 @@ class ChatBubbleWidget(QWidget):
             }
         }
         config = download_configs.get(self.message_type, download_configs['file'])
-        # 确保目录存在
         os.makedirs(config['dir'], exist_ok=True)
-        # 用户选择保存路径，默认使用客户端路径
         save_path, _ = QFileDialog.getSaveFileName(
             self, config['title'], os.path.join(config['dir'], config['default_name']), config['filter']
         )
         if not save_path:
             return
-        # 下载文件
-        result = await client.download_media(self.file_id, save_path, download_type=self.message_type)
+
+        # 定义进度回调函数
+        async def progress_callback(type_, progress, filename):
+            if type_ == "download" and filename == os.path.basename(save_path):
+                self.update_progress(progress)
+                QApplication.processEvents()
+
+        # 传递回调给 download_media
+        result = await client.download_media(
+            self.file_id, save_path, download_type=self.message_type, progress_callback=progress_callback
+        )
         if result.get("status") == "success":
+            self.complete_progress()  # 下载完成时清理进度条
             if self.message_type == 'file':
                 self.file = self.DOWNLOAD_LABELS.get('file', '文件')
         else:
+            self.complete_progress()  # 失败时也清理进度条
             QMessageBox.critical(
                 self, "错误",
                 f"{self.DOWNLOAD_LABELS.get(self.message_type, '文件')}下载失败: {result.get('message', '未知错误')}"
