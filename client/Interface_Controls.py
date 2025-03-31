@@ -178,8 +178,8 @@ class StyleGenerator:
             )
               },
         "checkbox": (
-            "QCheckBox {{ color: {font_color}; spacing: 5px; }}"
-            "QCheckBox::indicator {{ width: 10px; height: 10px; border-radius: 5px; }}"  # 16px / 2 = 8px
+            "QCheckBox {{ color: {color}; spacing: 5px; }}"  # 修改为动态color
+            "QCheckBox::indicator {{ width: 10px; height: 10px; border-radius: 5px; }}"
             "QCheckBox::indicator:unchecked {{ border: 1px solid {line_edit_border}; background-color: {chat_bg}; border-radius: 5px; }}"
             "QCheckBox::indicator:checked {{ border: 1px solid #4aa36c; background-color: #4aa36c; border-radius: 5px; }}"
         ),
@@ -204,7 +204,7 @@ class StyleGenerator:
         if isinstance(template, dict):
             qss = template.get("base", "").format(**t)
         else:
-            qss = template.format(**t, extra=extra)
+            qss = template.format(**t, color=t['font_color']) if style_type == "checkbox" else template.format(**t,                                                                                   extra=extra)
         widget.setStyleSheet(qss)
         if style_type != "menu":
             theme_manager.register(widget)

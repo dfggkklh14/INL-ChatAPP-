@@ -291,9 +291,7 @@ class ChatAreaWidget(QListWidget):
             if hasattr(chat_window, 'adjust_scroll'):
                 chat_window.adjust_scroll()
             if show_floating_label and chat_area:
-                floating_label = FloatingLabel(f"已删除 {len(items_to_remove)} 条消息", chat_area)
-                floating_label.show()
-                floating_label.raise_()
+                FloatingLabel(f"已删除 {len(items_to_remove)} 条消息", chat_area)
 
 @dataclass
 class BubbleConfig:
@@ -350,8 +348,6 @@ class ChatBubbleWidget(QWidget):
             self.parent().installEventFilter(self)
         self.installEventFilter(self)
         theme_manager.register(self)
-        self._msg_box = None
-        self.progress_bars = {}
 
     def _init_ui(self) -> None:
         self.font_message = QFont(FONTS['MESSAGE'])
@@ -1059,9 +1055,7 @@ class ChatBubbleWidget(QWidget):
 
     async def _show_delete_confirmation(self, chat_window) -> None:
         """异步显示删除确认提示"""
-        floating_label = FloatingLabel(f"已删除 1 条消息", chat_window)
-        floating_label.show()
-        floating_label.raise_()
+        FloatingLabel(f"已删除 1 条消息", chat_window)
 
     def on_image_clicked(self, event) -> None:
         if event.button() != Qt.LeftButton or not self.file_id:

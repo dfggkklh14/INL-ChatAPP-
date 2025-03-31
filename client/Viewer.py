@@ -387,9 +387,7 @@ class ImageViewer(QDialog):
         if not self.original_pixmap.isNull():
             clipboard = QApplication.clipboard()
             clipboard.setPixmap(self.original_pixmap)
-            floating_label = FloatingLabel("图片已复制到剪贴板", self)
-            floating_label.show()
-            floating_label.raise_()
+            FloatingLabel("图片已复制到剪贴板", self)
 
     def download_image(self) -> None:
         if not self.original_pixmap.isNull() and self.current_index >= 0:

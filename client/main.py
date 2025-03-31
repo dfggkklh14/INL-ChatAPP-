@@ -91,9 +91,7 @@ class LoginWindow(QDialog):
     def on_login(self) -> None:
         username, password = self.username_input.text().strip(), self.password_input.text().strip()
         if not username or not password:
-            success_label = FloatingLabel("账号或密码不能为空", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
-            success_label.show()
-            success_label.raise_()
+            FloatingLabel("账号或密码不能为空", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
         else:
             # 修改按钮状态
             self.login_button.setText("正在连接服务器")
@@ -126,9 +124,7 @@ class LoginWindow(QDialog):
             except ConnectionError as e:
                 error_msg = f"未连接到服务器"
                 logging.error(error_msg)
-                error_label = FloatingLabel(error_msg, self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
-                error_label.show()
-                error_label.raise_()
+                FloatingLabel(error_msg, self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
                 # 连接失败，恢复按钮状态
                 self.login_button.setText("登录")
                 self.login_button.setEnabled(True)
@@ -147,18 +143,14 @@ class LoginWindow(QDialog):
                 self.chat_client.chat_window = self.main_app.chat_window
                 self.main_app.chat_window.show()
             else:
-                error_label = FloatingLabel(f"登录失败: {res}", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
-                error_label.show()
-                error_label.raise_()
+                FloatingLabel(f"登录失败: {res}", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
                 # 认证失败，恢复按钮状态
                 self.login_button.setText("登录")
                 self.login_button.setEnabled(True)
                 QApplication.processEvents()
         except Exception as e:
             logging.error(f"认证过程中发生异常: {str(e)}")
-            error_label = FloatingLabel(f"登录失败: {str(e)}", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
-            error_label.show()
-            error_label.raise_()
+            FloatingLabel(f"登录失败: {str(e)}", self, x_offset_ratio=0.5, y_offset_ratio=1 / 6)
             # 异常情况，恢复按钮状态并清理 socket
             if self.chat_client.client_socket is not None:
                 try:
@@ -221,6 +213,9 @@ class ChatWindow(QWidget):
         self.image_list = []
         self.user_details_widget = None
         self.settings_widget = None
+        self.close_behavior = "minimize"  # 默认最小化到托盘栏
+        self.show_close_confirm = True  # 默认显示确认框
+        self.load_close_behavior()  # 加载初始关闭行为和确认设置
 
         # 连接信号
         self.client.friend_list_updated.connect(lambda friends: asyncio.create_task(self.update_friend_list(friends=friends)))
@@ -1437,12 +1432,9 @@ class ChatWindow(QWidget):
 
             # 根据 status 判断结果
             if resp.get("status") == "success":
-                label = FloatingLabel(f"已成功添加 {friend_name} 为好友", self)
+                FloatingLabel(f"已成功添加 {friend_name} 为好友", self)
             else:
-                label = FloatingLabel(f"添加失败: {resp.get('message', '未知错误')}", self)
-
-            label.show()
-            label.raise_()
+                FloatingLabel(f"添加失败: {resp.get('message', '未知错误')}", self)
             QApplication.processEvents()
             dialog.accept()
 
@@ -1466,6 +1458,23 @@ class ChatWindow(QWidget):
         await fut
         self.add_friend_dialog = None
 
+    def load_close_behavior(self):
+        """从配置文件加载关闭行为和确认设置"""
+        config_path = os.path.join(os.path.dirname(__file__), "Chat_DATA", "config", "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding='utf-8') as f:
+                config = json.load(f)
+            self.close_behavior = config.get("close_behavior", "minimize")
+            self.show_close_confirm = config.get("show_close_confirm", True)
+
+    def update_close_behavior(self, behavior: str):
+        """实时更新关闭行为"""
+        self.close_behavior = behavior
+
+    def update_show_close_confirm(self, show_confirm: bool):
+        """实时更新是否显示确认框"""
+        self.show_close_confirm = show_confirm
+
     def closeEvent(self, event):
         # 关闭所有打开的 FileConfirmDialog
         for dialog in self.findChildren(FileConfirmDialog):
@@ -1476,15 +1485,37 @@ class ChatWindow(QWidget):
         if hasattr(self, 'settings_widget') and self.settings_widget and not sip.isdeleted(self.settings_widget):
             self.settings_widget.close()
 
-        # 清理聊天区域
-        self.clear_chat_area()
-        theme_manager.clear_observers()
-        # 重置客户端状态
-        self.client.current_friend = None
-        self.friend_list.clearSelection()
-        # 隐藏窗口，不退出程序
-        event.ignore()
-        self.hide()
+        # 根据关闭行为决定操作
+        if self.close_behavior == "close":
+            if self.show_close_confirm:
+                # 显示确认提示框
+                msg_box = create_themed_message_box(self, "退出程序", "您确定要关闭程序吗？", True)
+                reply = msg_box.exec_()
+
+                if reply == QMessageBox.AcceptRole:  # 用户选择“是”
+                    self.clear_chat_area()
+                    theme_manager.clear_observers()
+                    self.client.current_friend = None
+                    self.friend_list.clearSelection()
+                    event.accept()
+                    self.main_app.quit_app()
+                else:  # 用户选择“否”
+                    event.ignore()
+            else:
+                # 不显示提示框，直接关闭
+                self.clear_chat_area()
+                theme_manager.clear_observers()
+                self.client.current_friend = None
+                self.friend_list.clearSelection()
+                event.accept()
+                self.main_app.quit_app()
+        else:  # "minimize"
+            self.clear_chat_area()
+            theme_manager.clear_observers()
+            self.client.current_friend = None
+            self.friend_list.clearSelection()
+            event.ignore()
+            self.hide()
 
     def keyPressEvent(self, event) -> None:
         # 在多选模式下按 Esc 退出

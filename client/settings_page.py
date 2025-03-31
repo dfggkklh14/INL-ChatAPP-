@@ -151,6 +151,7 @@ class SettingsFrame(QFrame):
         self.network_settings_widget = QWidget()
         self.create_notification_page()
         self.create_other_settings_page()
+        self.load_config_data()
 
         self.stacked_widget.addWidget(self.display_settings_widget)
         self.stacked_widget.addWidget(self.sound_settings_widget)
@@ -186,13 +187,20 @@ class SettingsFrame(QFrame):
             FloatingLabel(f"已切换到{theme_text}", self, x_offset_ratio=0.5, y_offset_ratio=5 / 6).show()
 
     def create_notification_page(self):
-        # 保持原始通知设置变量名
         self.notification_settings_widget = QWidget()
         notification_layout = QFormLayout(self.notification_settings_widget)
         self.notification_checkbox = QCheckBox("启用通知")
         StyleGenerator.apply_style(self.notification_checkbox, "checkbox")
         self.notification_checkbox.setChecked(True)
         notification_layout.addWidget(self.notification_checkbox)
+
+    def apply_checkbox_style(self, checkbox, color=None):
+        """动态应用checkbox样式，支持自定义颜色"""
+        t = theme_manager.current_theme
+        color = color or t['font_color']  # 默认使用font_color
+        qss = StyleGenerator._BASE_STYLES["checkbox"].format(**t, color=color)
+        checkbox.setStyleSheet(qss)
+        theme_manager.register(checkbox)
 
     def create_other_settings_page(self):
         self.other_settings_widget = QWidget()
@@ -212,18 +220,48 @@ class SettingsFrame(QFrame):
         self.cache_path_edit.setReadOnly(True)
 
         self.browse_button = QPushButton("浏览")
-        StyleGenerator.apply_style(self.browse_button, "button", extra = "border-radius: 5px;")
-        self.browse_button.setFixedSize(50, 20)
+        StyleGenerator.apply_style(self.browse_button, "button", extra="border-radius: 5px;")
+        self.browse_button.setFixedSize(50, 25)
 
         cache_path_layout = QHBoxLayout()
         cache_path_layout.addWidget(self.cache_path_edit)
         cache_path_layout.addWidget(self.browse_button)
 
-        # 将标签和输入框组合在一行
         cache_row_layout = QHBoxLayout()
         cache_row_layout.addWidget(self.cache_path_label)
         cache_row_layout.addLayout(cache_path_layout)
         other_layout.addLayout(cache_row_layout)
+
+        # 主页面关闭行为选择
+        self.close_behavior_label = QLabel("关闭窗口时:")
+        self.close_behavior_label.setFont(QFont("微软雅黑", 10))
+        self.close_behavior_label.setFixedHeight(25)
+        StyleGenerator.apply_style(self.close_behavior_label, "label")
+
+        self.close_behavior_combo = QComboBox()
+        self.close_behavior_combo.addItems(["关闭窗口", "最小化到托盘栏"])
+        self.close_behavior_combo.setFont(QFont("微软雅黑", 10))
+        StyleGenerator.apply_style(self.close_behavior_combo, "combo_box")
+        self.close_behavior_combo.currentTextChanged.connect(self.on_close_behavior_changed)
+
+        close_behavior_layout = QHBoxLayout()
+        close_behavior_layout.addWidget(self.close_behavior_label)
+        close_behavior_layout.addWidget(self.close_behavior_combo, 1)
+        close_behavior_layout.setSpacing(5)
+
+        # 新增是否显示确认框复选框
+        self.show_close_confirm_checkbox = QCheckBox("关闭时显示确认提示框")
+        self.show_close_confirm_checkbox.setFont(QFont("微软雅黑", 10))
+        self.apply_checkbox_style(self.show_close_confirm_checkbox)  # 使用新方法应用样式
+        self.show_close_confirm_checkbox.stateChanged.connect(self.on_show_close_confirm_changed)
+
+        checkbox_layout = QHBoxLayout()
+        checkbox_layout.addStretch()
+        checkbox_layout.addWidget(self.show_close_confirm_checkbox)
+
+        # 添加到主布局
+        other_layout.addLayout(close_behavior_layout)
+        other_layout.addLayout(checkbox_layout)
 
         # 添加伸缩项，确保退出按钮在底部
         other_layout.addStretch()
@@ -239,6 +277,59 @@ class SettingsFrame(QFrame):
         theme_manager.register(self.cache_path_edit)
         theme_manager.register(self.cache_path_label)
         theme_manager.register(self.logout_button)
+        theme_manager.register(self.close_behavior_label)
+        theme_manager.register(self.close_behavior_combo)
+        theme_manager.register(self.show_close_confirm_checkbox)
+
+    def on_close_behavior_changed(self, behavior_text):
+        """处理主页面关闭行为切换，仅在配置变化时显示提示"""
+        behavior = "close" if behavior_text == "关闭窗口" else "minimize"
+
+        # 获取当前配置文件中的值
+        config_path = os.path.join(os.path.dirname(__file__), "Chat_DATA", "config", "config.json")
+        current_behavior = "minimize"  # 默认值
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding='utf-8') as f:
+                config = json.load(f)
+            current_behavior = config.get("close_behavior", "minimize")
+
+        # 保存配置并检查是否发生变化
+        self.save_config(close_behavior=behavior)
+        if behavior != current_behavior:
+            FloatingLabel("设置已保存", self, x_offset_ratio=0.5, y_offset_ratio=5 / 6).show()
+
+        # 更新父窗口的关闭行为
+        if self.parent().parent() and hasattr(self.parent().parent(), 'update_close_behavior'):
+            self.parent().parent().update_close_behavior(behavior)
+
+        # 根据选择更新复选框颜色和启用状态
+        if behavior == "close":
+            self.show_close_confirm_checkbox.setEnabled(True)
+            self.apply_checkbox_style(self.show_close_confirm_checkbox)  # 使用默认颜色
+        else:
+            self.show_close_confirm_checkbox.setEnabled(False)
+            self.apply_checkbox_style(self.show_close_confirm_checkbox, "#808080")  # 灰色
+
+    def on_show_close_confirm_changed(self, state):
+        """处理是否显示确认框切换，仅在配置变化时显示提示"""
+        show_confirm = bool(state)
+
+        # 获取当前配置文件中的值
+        config_path = os.path.join(os.path.dirname(__file__), "Chat_DATA", "config", "config.json")
+        current_show_confirm = True
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding='utf-8') as f:
+                config = json.load(f)
+            current_show_confirm = config.get("show_close_confirm", True)
+
+        # 保存配置并检查是否发生变化
+        self.save_config(show_close_confirm=show_confirm)
+        if show_confirm != current_show_confirm:
+            status = "开启" if show_confirm else "关闭"
+            FloatingLabel(f"关闭确认提示已{status}", self, x_offset_ratio=0.5, y_offset_ratio=5 / 6).show()
+
+        if self.parent().parent() and hasattr(self.parent().parent(), 'update_show_close_confirm'):
+            self.parent().parent().update_show_close_confirm(show_confirm)
 
     def load_config_data(self):
         config_dir = os.path.join(os.path.dirname(__file__), "Chat_DATA", "config")
@@ -248,15 +339,27 @@ class SettingsFrame(QFrame):
                 config = json.load(f)
             cache_path = config.get("cache_path", os.path.join(os.path.dirname(__file__), "Chat_DATA"))
             notifications_enabled = config.get("notifications_enabled", True)
-            theme_mode = config.get("theme_mode", "light")  # 从 config.json 读取主题模式
+            theme_mode = config.get("theme_mode", "light")
+            close_behavior = config.get("close_behavior", "minimize")
+            show_close_confirm = config.get("show_close_confirm", True)
             self.notification_checkbox.setChecked(notifications_enabled)
-            # 设置主题选择下拉框的当前值
-            current_mode = "浅色模式" if theme_mode == "light" else "深色模式"
-            self.theme_combo.setCurrentText(current_mode)
+            self.theme_combo.setCurrentText("浅色模式" if theme_mode == "light" else "深色模式")
+            self.close_behavior_combo.setCurrentText("关闭窗口" if close_behavior == "close" else "最小化到托盘栏")
+            self.show_close_confirm_checkbox.setChecked(show_close_confirm)
+            self.show_close_confirm_checkbox.setEnabled(close_behavior == "close")
+            if close_behavior == "close":
+                self.show_close_confirm_checkbox.setEnabled(True)
+                self.apply_checkbox_style(self.show_close_confirm_checkbox)  # 默认颜色
+            else:
+                self.show_close_confirm_checkbox.setEnabled(False)
+                self.apply_checkbox_style(self.show_close_confirm_checkbox, "#808080")  # 灰色
         else:
             cache_path = os.path.join(os.path.dirname(__file__), "Chat_DATA")
             self.notification_checkbox.setChecked(True)
-            self.theme_combo.setCurrentText("浅色模式")  # 默认浅色模式
+            self.theme_combo.setCurrentText("浅色模式")
+            self.close_behavior_combo.setCurrentText("最小化到托盘栏")
+            self.show_close_confirm_checkbox.setChecked(True)
+            self.show_close_confirm_checkbox.setEnabled(False)
         self.cache_path_edit.setText(cache_path)
 
     def connect_all_signals(self):
@@ -337,6 +440,7 @@ class SettingsFrame(QFrame):
         self.move((q1_width - q2_width) // 2, (q1_height - q2_height) // 2)
 
     def update_theme(self, theme: dict):
+        # 更新整体框架样式
         self.setStyleSheet(f"""
             background-color: {theme['chat_bg']};
             border-top-left-radius: 10px;
@@ -344,6 +448,7 @@ class SettingsFrame(QFrame):
             border-bottom-left-radius: 10px;
             border-bottom-right-radius: 10px;
         """)
+        # 更新标题栏
         self.title_bar.setStyleSheet(f"""
             background-color: {theme['list_background']};
             border-top-left-radius: 10px;
@@ -351,6 +456,7 @@ class SettingsFrame(QFrame):
             border-bottom-left-radius: 0;
             border-bottom-right-radius: 0;
         """)
+        # 更新左侧类别列表
         self.category_list.setStyleSheet(f"""
             QListWidget {{
                 background-color: {theme['list_background']};
@@ -375,12 +481,24 @@ class SettingsFrame(QFrame):
                 outline: none;
             }}
         """)
+
+        # 更新标题标签
         self.title_label.setStyleSheet(f"color: {theme['font_color']}; font-weight: bold;")
-        StyleGenerator.apply_style(self.cache_path_label, "label")
+        # 更新关闭行为下拉框
         StyleGenerator.apply_style(self.notification_checkbox, "checkbox")
+        # 更新关闭确认复选框（根据关闭行为动态设置颜色）
+        if self.close_behavior_combo.currentText() == "关闭窗口":
+            self.apply_checkbox_style(self.show_close_confirm_checkbox)  # 默认颜色 (font_color)
+        else:
+            self.apply_checkbox_style(self.show_close_confirm_checkbox, "#808080")  # 灰色
+        # 更新其他控件
+        StyleGenerator.apply_style(self.cache_path_label, "label")
         StyleGenerator.apply_style(self.theme_label, "label")
         StyleGenerator.apply_style(self.theme_combo, "combo_box")
         StyleGenerator.apply_style(self.cache_path_edit, "line_edit")
+        StyleGenerator.apply_style(self.close_behavior_label, "label")
+        StyleGenerator.apply_style(self.close_behavior_combo, "combo_box")
+        StyleGenerator.apply_style(self.logout_button, "button", extra="border-radius: 4px;")
 
 
 class SettingsWidget(QWidget):
