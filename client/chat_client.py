@@ -211,7 +211,7 @@ class ChatClient(QObject):
         if resp.get("status") == "success":
             for f in self.friends:
                 if f.get("username") == friend:
-                    f["name"] = remarks
+                    f["name"] = resp.get("remarks", remarks)  # 更新为服务器返回的 remarks
                     break
             self.friend_list_updated.emit(self.friends)
         return resp

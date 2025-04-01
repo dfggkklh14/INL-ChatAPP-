@@ -445,8 +445,10 @@ class UserDetails(QWidget):
 
     def _save_edit(self, key: str, editor, label: QLabel, edit_widget: QWidget):
         new_text = editor.toPlainText().strip() if isinstance(editor, QTextEdit) else editor.text().strip()
-        if new_text != label.text():
-            label.setText(new_text)
+        old_text = label.text()
+        if new_text != old_text:
+            if new_text != "":  # 非空时立即更新 UI
+                label.setText(new_text)
             asyncio.create_task(self._update_profile(field_type=key, field_value=new_text))
         self._cancel_editing(key)
 
@@ -455,7 +457,7 @@ class UserDetails(QWidget):
         resp = None
         if avatar_pixmap:
             resp = await self.client.upload_avatar(avatar_pixmap)
-        elif field_type and field_value:
+        elif field_type and field_value is not None:
             method = self.client.update_friend_remarks if field_type == "name" and self.from_online else getattr(
                 self.client, f"update_{field_type}")
             target = self.username if self.from_online else field_value
@@ -463,10 +465,9 @@ class UserDetails(QWidget):
 
         if resp:
             if resp.get("status") == "success":
-                # 根据 field_type 或头像更新选择提示
                 msg_map = {
                     "sign": "签名更新成功",
-                    "name": "昵称更新成功" if not self.from_online else resp.get("message") ,
+                    "name": "昵称更新成功" if not self.from_online else resp.get("message"),
                     None: "头像上传成功"
                 }
                 FloatingLabel(msg_map[field_type], self).show()
@@ -474,11 +475,19 @@ class UserDetails(QWidget):
                     self.avatar = avatar_pixmap
                     self.update_avatar()
                 elif field_type:
-                    setattr(self, field_type, field_value)
-                    if self.from_online and hasattr(self.parent().parent(), 'update_friend_list'):
-                        await self.parent().parent().update_friend_list()
+                    if field_type == "name" and self.from_online:
+                        updated_value = resp.get("remarks", field_value) if field_value == "" else field_value
+                    else:
+                        updated_value = field_value  # 非好友备注更新，直接使用输入值
+
+                    # 更新本地属性
+                    setattr(self, field_type, updated_value)
+                    # 更新 UI
+                    target_label = self.name_label if field_type == "name" else self.sign_label
+                    target_label.setText(updated_value)
+                    if self.from_online and field_type == "name" and hasattr(self.parent().parent(), 'update_friend_list'):
+                        await self.parent().parent().update_friend_list(affected_users=[self.username])
             else:
-                # 使用服务器返回的错误消息
                 error_msg = resp.get("message", "未知错误")
                 FloatingLabel(f"更新失败: {error_msg}", self).show()
                 if field_type:

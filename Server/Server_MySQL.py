@@ -281,6 +281,7 @@ def update_user_profile(request: dict, client_sock: socket.socket) -> dict:
     push_friends_update(username, username)  # 更新后推送
     return response
 
+
 def update_friend_remarks(request: dict, client_sock: socket.socket) -> dict:
     """更新好友备注"""
     username = request.get("username")
@@ -291,23 +292,51 @@ def update_friend_remarks(request: dict, client_sock: socket.socket) -> dict:
     conn = get_db_connection()
     if not conn:
         return {"type": "Update_Remarks", "status": "error", "message": "数据库连接失败", "request_id": request_id}
+
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
+        # 检查好友关系是否存在
         cursor.execute("SELECT * FROM friends WHERE username = %s AND friend = %s", (username, friend))
         if not cursor.fetchone():
-            return {"type": "Update_Remarks", "status": "error", "message": f"{friend} 不是您的好友", "request_id": request_id}
-        cursor.execute("UPDATE friends SET Remarks = %s WHERE username = %s AND friend = %s", (remarks, username, friend))
+            return {"type": "Update_Remarks", "status": "error", "message": f"{friend} 不是您的好友",
+                    "request_id": request_id}
+
+        # 获取好友的 name 字段
+        cursor.execute("SELECT names FROM users WHERE username = %s", (friend,))
+        friend_info = cursor.fetchone()
+        friend_name = friend_info['names'] if friend_info and friend_info['names'] else friend
+
+        # 如果 remarks 为空，则将 Remarks 设为空，但响应中返回 friend_name
+        if remarks is None or remarks == "":
+            remarks_to_set = ""  # 数据库中 Remarks 设为空
+            display_remarks = friend_name  # 响应中返回 users 表的 names
+            message = f"已清除{friend}的备注"  # 特定消息
+        else:
+            remarks_to_set = remarks
+            display_remarks = remarks  # 响应中返回传入的 remarks
+            message = f"已将 {friend} 的备注更新为 {remarks}"  # 正常消息
+
+        # 更新 Remarks 字段
+        cursor.execute("UPDATE friends SET Remarks = %s WHERE username = %s AND friend = %s",
+                       (remarks_to_set, username, friend))
         conn.commit()
-        logging.debug(f"好友备注更新成功: {username} -> {friend}，备注: {remarks}")
+        logging.debug(f"好友备注更新成功: {username} -> {friend}，备注: {remarks_to_set}")
+
     except Error as e:
         logging.error(f"更新好友备注失败: {e}")
         return {"type": "Update_Remarks", "status": "error", "message": "更新备注失败", "request_id": request_id}
     finally:
         conn.close()
 
-    response = {"type": "Update_Remarks", "status": "success",
-                "message": f"已将 {friend} 的备注更新为 {remarks}",
-                "request_id": request_id, "friend": friend, "remarks": remarks}
+    # 返回响应，使用 display_remarks 作为 remarks 字段的值
+    response = {
+        "type": "Update_Remarks",
+        "status": "success",
+        "message": message,  # 根据 remarks 是否为空选择不同的 message
+        "request_id": request_id,
+        "friend": friend,
+        "remarks": display_remarks  # 返回 friend_name 或 remarks
+    }
     logging.debug(f"更新备注返回响应: {response}")
     return response
 

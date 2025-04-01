@@ -325,7 +325,7 @@ class SettingsFrame(QFrame):
         # 保存配置并检查是否发生变化
         self.save_config(show_close_confirm=show_confirm)
         if show_confirm != current_show_confirm:
-            status = "开启" if show_confirm else "关闭"
+            status = "打开" if show_confirm else "关闭"
             FloatingLabel(f"关闭确认提示已{status}", self, x_offset_ratio=0.5, y_offset_ratio=5 / 6).show()
 
         if self.parent().parent() and hasattr(self.parent().parent(), 'update_show_close_confirm'):
@@ -425,7 +425,7 @@ class SettingsFrame(QFrame):
         # 保持原始通知开关处理
         try:
             self.save_config(notifications_enabled=bool(state))
-            status = "开启" if state else "关闭"
+            status = "打开" if state else "关闭"
             FloatingLabel(f"通知已{status}", self, x_offset_ratio=0.5, y_offset_ratio=5 / 6).show()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存配置失败: {str(e)}")
