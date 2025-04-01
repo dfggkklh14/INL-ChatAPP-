@@ -1080,14 +1080,7 @@ def handle_client(client_sock: socket.socket, client_addr):
             elif req_type == "delete_messages":
                 response = delete_messages(request, client_sock)
             elif req_type == "exit":
-                response = {
-                    "type": "exit",
-                    "status": "success",
-                    "message": f"{logged_in_user} 已退出",
-                    "request_id": request.get("request_id")
-                }
-                send_response(client_sock, response)
-                logging.info(f"用户 {logged_in_user} 请求退出")
+                _exit(request, client_sock, logged_in_user)
                 break
             else:
                 response = {
@@ -1130,6 +1123,16 @@ def handle_client(client_sock: socket.socket, client_addr):
                         break
         client_sock.close()
         logging.info(f"关闭连接：{client_addr}")
+
+def _exit(request: dict, client_sock: socket.socket, logged_in_user: str):
+    response = {
+        "type": "exit",
+        "status": "success",
+        "message": f"{logged_in_user} 已退出",
+        "request_id": request.get("request_id")
+    }
+    send_response(client_sock, response)
+    logging.info(f"用户 {logged_in_user} 请求退出")
 
 def get_user_info(request: dict, client_sock: socket.socket) -> dict:
     """获取用户信息"""
