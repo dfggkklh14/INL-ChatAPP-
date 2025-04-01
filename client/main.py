@@ -296,20 +296,26 @@ class ChatWindow(QWidget):
         # 执行对话框并获取用户选择
         if msg_box.exec_() == QMessageBox.RejectRole:
             return  # 如果用户选择取消，则直接返回
+
         async def async_logout():
-            # 发送退出请求
             if self.client:
                 await self.client.logout()
-            # 关闭当前窗口
-            self.close()
-            # 清理客户端状态
+                if self.client.client_socket:
+                    try:
+                        self.client.client_socket.close()
+                    except Exception as e:
+                        logging.error(f"关闭 socket 失败: {e}")
+                    self.client.client_socket = None
+            self.hide()
             self.client.is_authenticated = False
             self.client.username = None
             self.client.current_friend = None
-            # 重新创建登录窗口
+            self.active_bubbles.clear()
+            self.image_list.clear()
+            if self.main_app.login_window and not sip.isdeleted(self.main_app.login_window):
+                self.main_app.login_window.deleteLater()
             self.main_app.login_window = LoginWindow(self.main_app)
             self.main_app.login_window.show()
-            # 清理聊天窗口
             if self.main_app.chat_window:
                 self.main_app.chat_window.deleteLater()
                 self.main_app.chat_window = None

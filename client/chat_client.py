@@ -795,13 +795,23 @@ class ChatClient(QObject):
             res["errors"] = errors
         return res
 
+    async def reset_state(self):
+        self.is_authenticated = False
+        self.username = None
+        self.current_friend = None
+        self.friends.clear()
+        self.unread_messages.clear()
+        self.pending_requests.clear()
+
     async def logout(self) -> dict:
         req = {
             "type": "exit",
             "username": self.username,
             "request_id": str(uuid.uuid4())
         }
-        return await self.send_request(req)
+        resp = await self.send_request(req)
+        await self.reset_state()  # 重置状态
+        return resp
 
     async def close_connection(self):
         self.is_running = False

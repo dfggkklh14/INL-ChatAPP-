@@ -239,7 +239,7 @@ class SettingsFrame(QFrame):
         StyleGenerator.apply_style(self.close_behavior_label, "label")
 
         self.close_behavior_combo = QComboBox()
-        self.close_behavior_combo.addItems(["关闭窗口", "最小化到托盘栏"])
+        self.close_behavior_combo.addItems(["退出INL", "最小化"])
         self.close_behavior_combo.setFont(QFont("微软雅黑", 10))
         StyleGenerator.apply_style(self.close_behavior_combo, "combo_box")
         self.close_behavior_combo.currentTextChanged.connect(self.on_close_behavior_changed)
@@ -283,7 +283,7 @@ class SettingsFrame(QFrame):
 
     def on_close_behavior_changed(self, behavior_text):
         """处理主页面关闭行为切换，仅在配置变化时显示提示"""
-        behavior = "close" if behavior_text == "关闭窗口" else "minimize"
+        behavior = "close" if behavior_text == "退出INL" else "minimize"
 
         # 获取当前配置文件中的值
         config_path = os.path.join(os.path.dirname(__file__), "Chat_DATA", "config", "config.json")
@@ -344,7 +344,7 @@ class SettingsFrame(QFrame):
             show_close_confirm = config.get("show_close_confirm", True)
             self.notification_checkbox.setChecked(notifications_enabled)
             self.theme_combo.setCurrentText("浅色模式" if theme_mode == "light" else "深色模式")
-            self.close_behavior_combo.setCurrentText("关闭窗口" if close_behavior == "close" else "最小化到托盘栏")
+            self.close_behavior_combo.setCurrentText("退出INL" if close_behavior == "close" else "最小化")
             self.show_close_confirm_checkbox.setChecked(show_close_confirm)
             self.show_close_confirm_checkbox.setEnabled(close_behavior == "close")
             if close_behavior == "close":
@@ -357,7 +357,7 @@ class SettingsFrame(QFrame):
             cache_path = os.path.join(os.path.dirname(__file__), "Chat_DATA")
             self.notification_checkbox.setChecked(True)
             self.theme_combo.setCurrentText("浅色模式")
-            self.close_behavior_combo.setCurrentText("最小化到托盘栏")
+            self.close_behavior_combo.setCurrentText("最小化")
             self.show_close_confirm_checkbox.setChecked(True)
             self.show_close_confirm_checkbox.setEnabled(False)
         self.cache_path_edit.setText(cache_path)
@@ -487,7 +487,7 @@ class SettingsFrame(QFrame):
         # 更新关闭行为下拉框
         StyleGenerator.apply_style(self.notification_checkbox, "checkbox")
         # 更新关闭确认复选框（根据关闭行为动态设置颜色）
-        if self.close_behavior_combo.currentText() == "关闭窗口":
+        if self.close_behavior_combo.currentText() == "退出INL":
             self.apply_checkbox_style(self.show_close_confirm_checkbox)  # 默认颜色 (font_color)
         else:
             self.apply_checkbox_style(self.show_close_confirm_checkbox, "#808080")  # 灰色
